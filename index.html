@@ -1,0 +1,1565 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pragma Studio</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif; }
+  body { background: #fafafa; color: #111; }
+  .scroll-hide::-webkit-scrollbar { display: none; }
+  .card { background: #fff; border: 1px solid #eee; border-radius: 14px; }
+  .btn-primary { background: #111; color: #fff; border-radius: 10px; padding: 8px 14px; font-weight: 500; transition: opacity .15s; }
+  .btn-primary:hover { opacity: .85; }
+  .btn-ghost { color: #555; padding: 8px 12px; border-radius: 10px; }
+  .btn-ghost:hover { background: #f1f1f1; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+  .nav-item { display:flex; align-items:center; gap: 10px; padding: 8px 12px; border-radius: 10px; color:#444; font-size: 14px; cursor: pointer; }
+  .nav-item:hover { background: #f1f1f1; }
+  .nav-item.active { background: #111; color: #fff; }
+  .input, select, textarea { background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 8px 12px; font-size: 14px; outline: none; transition: border .15s; width: 100%; }
+  .input:focus, select:focus, textarea:focus { border-color: #111; }
+  .kanban-col { background: #f3f3f3; border-radius: 14px; padding: 12px; min-width: 260px; }
+  .task-card { background:#fff; border-radius: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid #eee; cursor: pointer; transition: transform .1s, box-shadow .1s; }
+  .task-card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.05); }
+  .modal-bg { background: rgba(0,0,0,.4); backdrop-filter: blur(4px); }
+  .fade-in { animation: fadeIn .15s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<div id="app" class="flex h-screen overflow-hidden">
+  <!-- Sidebar -->
+  <aside class="w-60 border-r border-gray-200 bg-white flex flex-col">
+    <div class="px-5 py-5 flex items-center justify-between">
+      <div>
+        <div class="text-xl font-semibold tracking-tight">Pragma</div>
+        <div class="text-xs text-gray-500 mt-0.5">Studio</div>
+      </div>
+      <button id="bellBtn" onclick="toggleNotifications()" class="relative p-2 rounded-lg hover:bg-gray-100 transition" title="Notificaciones">
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
+          <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
+        </svg>
+        <span id="bellBadge" class="hidden absolute -top-1 -right-1 bg-red-500 text-white text-[11px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center ring-2 ring-white"></span>
+      </button>
+    </div>
+    <nav id="nav" class="px-3 flex-1 space-y-1"></nav>
+    <div class="p-3 border-t border-gray-100">
+      <div id="userInfo" class="mb-2"></div>
+      <div class="flex gap-1">
+        <button onclick="exportData()" class="btn-ghost flex-1 text-xs" title="Backup local (solo por seguridad)">Backup</button>
+        <button onclick="importData()" class="btn-ghost flex-1 text-xs">Importar</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main id="main" class="flex-1 overflow-y-auto"></main>
+</div>
+
+<!-- Notifications panel -->
+<div id="notifPanel" class="hidden fixed left-56 top-20 w-80 bg-white rounded-2xl shadow-2xl border border-gray-200 z-40 max-h-[70vh] overflow-hidden fade-in">
+  <div class="p-4 border-b border-gray-100 flex items-center justify-between">
+    <h3 class="font-semibold">Notificaciones</h3>
+    <button onclick="markAllRead()" class="text-xs text-gray-500 hover:text-gray-900">Marcar todas leídas</button>
+  </div>
+  <div id="notifList" class="overflow-y-auto max-h-[60vh]"></div>
+</div>
+
+<!-- Modal host -->
+<div id="modal" class="fixed inset-0 z-50 hidden items-center justify-center modal-bg">
+  <div id="modalContent" class="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto fade-in"></div>
+</div>
+
+<input type="file" id="fileInput" accept=".json" class="hidden" />
+
+<script>
+// ============ STATE ============
+const DEFAULT_STATE = {
+  user: { name: "Gonzalo" },
+  members: [{ id: 'me', name: 'Gonzalo', color: '#3b82f6' }],
+  currentMemberId: 'me',
+  projects: [],
+  tasks: [],
+  incomes: [],
+  expenses: [],
+  comments: [],       // { id, taskId, authorId, content, mentions: [memberId], createdAt }
+  history: [],        // { id, taskId, action, from, to, createdAt }
+  notifications: [],  // { id, forMemberId, fromMemberId, taskId, text, read, createdAt }
+};
+
+let state = load();
+let currentView = 'tasks';
+let currentTaskId = null;
+
+function load() {
+  try {
+    const raw = localStorage.getItem('pragma_state');
+    if (!raw) return structuredClone(DEFAULT_STATE);
+    return { ...structuredClone(DEFAULT_STATE), ...JSON.parse(raw) };
+  } catch { return structuredClone(DEFAULT_STATE); }
+}
+function save() { localStorage.setItem('pragma_state', JSON.stringify(state)); }
+function uid() { return Math.random().toString(36).slice(2, 10); }
+function fmt(d) { if (!d) return '—'; const x = new Date(d); return x.toLocaleDateString('es-AR', { day:'2-digit', month:'short' }); }
+function fmtMoney(n) { return '$' + (Number(n)||0).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
+function todayISO() { return new Date().toISOString().slice(0,10); }
+function daysBetween(a,b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
+
+// ============ CONSTANTS ============
+const STATUS = {
+  PENDING:     { label: 'Pendiente',   color: 'bg-gray-200 text-gray-700' },
+  IN_PROGRESS: { label: 'En progreso', color: 'bg-blue-100 text-blue-700' },
+  IN_REVIEW:   { label: 'En revisión', color: 'bg-amber-100 text-amber-800' },
+  COMPLETED:   { label: 'Completada',  color: 'bg-green-100 text-green-700' },
+  BLOCKED:     { label: 'Bloqueada',   color: 'bg-red-100 text-red-700' },
+};
+const STATUS_ORDER = ['PENDING','IN_PROGRESS','IN_REVIEW','BLOCKED','COMPLETED'];
+const PRIORITY = {
+  LOW:    { label: 'Baja',   color: 'bg-gray-100 text-gray-600' },
+  MEDIUM: { label: 'Media',  color: 'bg-blue-50 text-blue-700' },
+  HIGH:   { label: 'Alta',   color: 'bg-orange-100 text-orange-700' },
+  URGENT: { label: 'Urgente',color: 'bg-red-100 text-red-700' },
+};
+const EXPENSE_CAT = {
+  FIXED:      'Fijo',
+  VARIABLE:   'Variable',
+  INVESTMENT: 'Inversión',
+};
+const PROJECT_STATUS = {
+  LEAD:             { label: 'Lead',              color: 'bg-gray-100 text-gray-700' },
+  POSSIBLE:         { label: 'Posible',           color: 'bg-blue-50 text-blue-700' },
+  IN_DEVELOPMENT:   { label: 'En desarrollo',     color: 'bg-amber-100 text-amber-800' },
+  ACTIVE_RECURRING: { label: 'Activo mensualidad',color: 'bg-green-100 text-green-700' },
+  PAUSED:           { label: 'Pausado',           color: 'bg-yellow-100 text-yellow-700' },
+  DONE:             { label: 'Terminado',         color: 'bg-purple-100 text-purple-700' },
+  ARCHIVED:         { label: 'Archivado',         color: 'bg-gray-50 text-gray-500' },
+};
+const PROJECT_STATUS_ORDER = ['LEAD','POSSIBLE','IN_DEVELOPMENT','ACTIVE_RECURRING','PAUSED','DONE','ARCHIVED'];
+
+// ============ HELPERS ============
+function getProject(id) { return state.projects.find(p => p.id === id); }
+function getTask(id)    { return state.tasks.find(t => t.id === id); }
+function getMember(id)  { return state.members.find(m => m.id === id); }
+function currentMember(){ return getMember(state.currentMemberId) || state.members[0]; }
+
+function parseMentions(text) {
+  const mentions = [];
+  state.members.forEach(m => {
+    const re = new RegExp(`@${m.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (re.test(text)) mentions.push(m.id);
+  });
+  return mentions;
+}
+
+function renderMentions(text) {
+  let out = escapeHtml(text);
+  state.members.forEach(m => {
+    const re = new RegExp(`@${m.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+    out = out.replace(re, `<span class="bg-blue-50 text-blue-700 rounded px-1">@${escapeHtml(m.name)}</span>`);
+  });
+  return out;
+}
+
+function unreadCount() {
+  return state.notifications.filter(n => n.forMemberId === state.currentMemberId && !n.read).length;
+}
+
+function projectProgress(pid) {
+  const tasks = state.tasks.filter(t => t.projectId === pid);
+  if (tasks.length === 0) return 0;
+  return Math.round(tasks.filter(t => t.status === 'COMPLETED').length / tasks.length * 100);
+}
+
+function pushHistory(taskId, action, from, to) {
+  state.history.push({ id: uid(), taskId, action, from, to, createdAt: new Date().toISOString() });
+}
+
+function notify(forMemberId, taskId, text) {
+  if (!forMemberId || forMemberId === state.currentMemberId) return;
+  state.notifications.push({
+    id: uid(),
+    forMemberId,
+    fromMemberId: state.currentMemberId,
+    taskId,
+    text,
+    read: false,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+// ============ NAV ============
+const NAV = [
+  { key: 'tasks',    label: 'Tareas',    icon: '☰' },
+  { key: 'projects', label: 'Proyectos', icon: '◫' },
+  { key: 'finance',  label: 'Finanzas',  icon: '$' },
+  { key: 'reports',  label: 'Reportes',  icon: '◈' },
+  { key: 'team',     label: 'Equipo',    icon: '◐' },
+  { key: 'guide',    label: 'Manual',    icon: '?' },
+];
+
+function renderNav() {
+  const nav = document.getElementById('nav');
+  nav.innerHTML = NAV.map(n => `
+    <div class="nav-item ${currentView === n.key ? 'active' : ''}" onclick="go('${n.key}')">
+      <span class="w-5 text-center opacity-70">${n.icon}</span>
+      <span>${n.label}</span>
+    </div>
+  `).join('');
+  const me = currentMember();
+  document.getElementById('userInfo').innerHTML = `
+    <button onclick="openMemberPicker()" class="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-gray-100 transition">
+      <span class="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold" style="background:${me?.color || '#666'}">${(me?.name || '?')[0]}</span>
+      <span class="text-sm font-medium">${me?.name || 'Sin usuario'}</span>
+    </button>
+  `;
+  // Bell badge
+  const c = unreadCount();
+  const badge = document.getElementById('bellBadge');
+  if (c > 0) { badge.classList.remove('hidden'); badge.textContent = c > 9 ? '9+' : c; }
+  else { badge.classList.add('hidden'); }
+}
+
+function go(view) {
+  currentView = view;
+  currentTaskId = null;
+  renderNav();
+  render();
+}
+
+// ============ RENDER DISPATCH ============
+function render() {
+  const main = document.getElementById('main');
+  const views = {
+    tasks: renderTasks,
+    projects: renderProjects,
+    finance: renderFinance,
+    reports: renderReports,
+    team: renderTeam,
+    guide: renderGuide,
+  };
+  main.innerHTML = views[currentView]();
+  attachViewEvents();
+}
+
+// ============ HEADER TEMPLATE ============
+function viewHeader(title, subtitle, actions = '') {
+  return `
+    <div class="px-10 pt-10 pb-6 flex items-end justify-between">
+      <div>
+        <h1 class="text-3xl font-semibold tracking-tight">${title}</h1>
+        ${subtitle ? `<p class="text-gray-500 mt-1 text-sm">${subtitle}</p>` : ''}
+      </div>
+      <div class="flex gap-2">${actions}</div>
+    </div>
+  `;
+}
+
+// ============ HOME ============
+function renderHome() {
+  const today = todayISO();
+  const me = state.currentMemberId;
+  const myTasks = state.tasks.filter(t => t.status !== 'COMPLETED' && (!t.assigneeId || t.assigneeId === me));
+  const dueToday = myTasks.filter(t => t.dueDate && t.dueDate <= today);
+  const thisWeek = myTasks.filter(t => {
+    if (!t.dueDate) return false;
+    const diff = daysBetween(today, t.dueDate);
+    return diff >= 0 && diff <= 7;
+  });
+  const blocked = state.tasks.filter(t => t.status === 'BLOCKED' && (!t.assigneeId || t.assigneeId === me));
+  const greeting = new Date().getHours() < 12 ? 'Buen día' : new Date().getHours() < 19 ? 'Buenas tardes' : 'Buenas noches';
+
+  return `
+    ${viewHeader(`${greeting}, ${currentMember()?.name || ''}`, 'Qué se hace hoy',
+      `<button class="btn-primary" onclick="openTaskModal()">+ Nueva tarea</button>`)}
+
+    <div class="px-10 pb-10 space-y-6">
+
+      <section>
+        <h2 class="text-xs uppercase tracking-wider text-gray-500 mb-3">Vence hoy o antes (${dueToday.length})</h2>
+        <div class="card p-2">
+          ${dueToday.length === 0
+            ? `<div class="text-gray-400 text-sm p-4">Nada urgente. ✺</div>`
+            : dueToday.map(taskRow).join('')}
+        </div>
+      </section>
+
+      ${blocked.length > 0 ? `
+      <section>
+        <h2 class="text-xs uppercase tracking-wider text-red-600 mb-3">⚠ Bloqueadas (${blocked.length})</h2>
+        <div class="card p-2">
+          ${blocked.map(taskRow).join('')}
+        </div>
+      </section>` : ''}
+
+      <section>
+        <h2 class="text-xs uppercase tracking-wider text-gray-500 mb-3">Esta semana (${thisWeek.length})</h2>
+        <div class="card p-2">
+          ${thisWeek.length === 0
+            ? `<div class="text-gray-400 text-sm p-4">Vacío.</div>`
+            : thisWeek.map(taskRow).join('')}
+        </div>
+      </section>
+
+      <section class="grid grid-cols-4 gap-4">
+        ${statCard('Tareas activas', myTasks.length)}
+        ${statCard('Proyectos activos', state.projects.filter(p=>p.status==='ACTIVE').length)}
+        ${statCard('Clientes', state.clients.length)}
+        ${statCard('Balance del mes', fmtMoney(monthBalance()))}
+      </section>
+
+    </div>
+  `;
+}
+
+function statCard(label, value) {
+  return `
+    <div class="card p-5">
+      <div class="text-xs text-gray-500">${label}</div>
+      <div class="text-2xl font-semibold mt-1">${value}</div>
+    </div>
+  `;
+}
+
+function taskRow(t) {
+  const p = getProject(t.projectId);
+  const assignee = getMember(t.assigneeId);
+  const isOverdue = t.dueDate && t.dueDate < todayISO() && t.status !== 'COMPLETED';
+  return `
+    <div class="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-lg cursor-pointer" onclick="openTaskDetail('${t.id}')">
+      <span class="chip ${STATUS[t.status].color}">${STATUS[t.status].label}</span>
+      <div class="flex-1">
+        <div class="text-sm font-medium">${escapeHtml(t.title)}</div>
+        <div class="text-xs text-gray-500">${p ? escapeHtml(p.name) : 'Sin proyecto'}</div>
+      </div>
+      ${assignee ? `<span class="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-semibold" style="background:${assignee.color}" title="${escapeAttr(assignee.name)}">${escapeHtml(assignee.name[0])}</span>` : '<span class="w-6"></span>'}
+      <span class="chip ${PRIORITY[t.priority].color}">${PRIORITY[t.priority].label}</span>
+      <span class="text-xs ${isOverdue ? 'text-red-600 font-medium' : 'text-gray-500'} w-20 text-right">${fmt(t.dueDate)}</span>
+    </div>
+  `;
+}
+
+// ============ TASKS ============
+let tasksViewMode = 'kanban';
+let tasksFilter = { projectId: '', status: '' };
+
+function renderTasks() {
+  return `
+    ${viewHeader('Tareas', `${state.tasks.length} en total`,
+      `<div class="flex gap-1 bg-gray-100 rounded-lg p-1">
+         <button class="px-3 py-1 rounded-md text-sm ${tasksViewMode==='list'?'bg-white shadow-sm':''}" onclick="tasksViewMode='list'; render()">Lista</button>
+         <button class="px-3 py-1 rounded-md text-sm ${tasksViewMode==='kanban'?'bg-white shadow-sm':''}" onclick="tasksViewMode='kanban'; render()">Tablero</button>
+         <button class="px-3 py-1 rounded-md text-sm ${tasksViewMode==='gantt'?'bg-white shadow-sm':''}" onclick="tasksViewMode='gantt'; render()">Gantt</button>
+       </div>
+       <button class="btn-primary" onclick="openTaskModal()">+ Nueva</button>`
+    )}
+
+    <div class="px-10 pb-4 flex gap-2">
+      <select class="input max-w-xs" onchange="tasksFilter.projectId=this.value; render()">
+        <option value="">Todos los proyectos</option>
+        ${state.projects.map(p => `<option value="${p.id}" ${tasksFilter.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+      </select>
+    </div>
+
+    <div class="px-10 pb-10">
+      ${tasksViewMode === 'kanban' ? renderKanban() : tasksViewMode === 'gantt' ? renderGantt() : renderTaskList()}
+    </div>
+  `;
+}
+
+function filteredTasks() {
+  return state.tasks.filter(t =>
+    (!tasksFilter.projectId || t.projectId === tasksFilter.projectId) &&
+    (!tasksFilter.status    || t.status    === tasksFilter.status)
+  );
+}
+
+function renderKanban() {
+  const tasks = filteredTasks();
+  return `
+    <div class="flex gap-4 overflow-x-auto scroll-hide pb-4">
+      ${STATUS_ORDER.map(s => {
+        const colTasks = tasks.filter(t => t.status === s);
+        return `
+          <div class="kanban-col flex-1">
+            <div class="flex items-center justify-between mb-3 px-1">
+              <div class="flex items-center gap-2">
+                <span class="chip ${STATUS[s].color}">${STATUS[s].label}</span>
+                <span class="text-xs text-gray-500">${colTasks.length}</span>
+              </div>
+            </div>
+            <div>
+              ${colTasks.map(t => kanbanCard(t)).join('')}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function kanbanCard(t) {
+  const p = getProject(t.projectId);
+  const assignee = getMember(t.assigneeId);
+  const isOverdue = t.dueDate && t.dueDate < todayISO() && t.status !== 'COMPLETED';
+  return `
+    <div class="task-card" onclick="openTaskDetail('${t.id}')">
+      <div class="flex items-center justify-between mb-2">
+        ${p ? `<span class="text-xs font-medium truncate" style="color:${p.color}">● ${escapeHtml(p.name)}</span>` : '<span></span>'}
+        <span class="chip ${PRIORITY[t.priority].color}">${PRIORITY[t.priority].label}</span>
+      </div>
+      <div class="text-sm font-medium">${escapeHtml(t.title)}</div>
+      <div class="flex items-center justify-between mt-2">
+        ${t.dueDate ? `<span class="text-xs ${isOverdue?'text-red-600 font-medium':'text-gray-500'}">${isOverdue?'⚠ ':''}${fmt(t.dueDate)}</span>` : '<span></span>'}
+        ${assignee ? `<span class="w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-semibold" style="background:${assignee.color}" title="${escapeAttr(assignee.name)}">${escapeHtml(assignee.name[0])}</span>` : ''}
+      </div>
+      ${t.status === 'BLOCKED' && t.blockedReason ? `<div class="text-xs text-red-600 mt-2 italic">${escapeHtml(t.blockedReason)}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderTaskList() {
+  const tasks = filteredTasks();
+  if (tasks.length === 0) return `<div class="card p-10 text-center text-gray-400">No hay tareas. Creá la primera.</div>`;
+  return `
+    <div class="card">
+      ${tasks.map(taskRow).join('<div class="border-t border-gray-100"></div>')}
+    </div>
+  `;
+}
+
+// ============ GANTT ============
+function renderGantt() {
+  const tasks = filteredTasks().filter(t => t.startDate && t.dueDate);
+  if (tasks.length === 0) return `<div class="card p-10 text-center text-gray-400">Necesitás tareas con fecha de inicio y fin para ver el Gantt.</div>`;
+
+  // Compute date range
+  const dates = tasks.flatMap(t => [new Date(t.startDate), new Date(t.dueDate)]);
+  let minDate = new Date(Math.min(...dates));
+  let maxDate = new Date(Math.max(...dates));
+  // Pad 2 days each side
+  minDate.setDate(minDate.getDate() - 2);
+  maxDate.setDate(maxDate.getDate() + 2);
+  const totalDays = Math.max(1, Math.round((maxDate - minDate) / 86400000));
+  const dayWidth = 32; // px per day
+  const chartWidth = totalDays * dayWidth;
+
+  // Group tasks by project
+  const byProject = {};
+  tasks.forEach(t => {
+    if (!byProject[t.projectId]) byProject[t.projectId] = [];
+    byProject[t.projectId].push(t);
+  });
+
+  // Build day headers (show every 2 days for density)
+  let headers = '';
+  for (let i = 0; i <= totalDays; i++) {
+    const d = new Date(minDate); d.setDate(d.getDate() + i);
+    const isMonday = d.getDay() === 1;
+    const isFirst = d.getDate() === 1;
+    headers += `<div class="inline-block text-center text-[10px] ${isFirst?'font-bold':'text-gray-500'} border-l ${isMonday?'border-gray-300':'border-gray-100'}" style="width:${dayWidth}px;height:28px;line-height:28px">${d.getDate()}${isFirst?'/'+(d.getMonth()+1):''}</div>`;
+  }
+
+  // Today marker
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayOffset = Math.round((today - minDate) / 86400000) * dayWidth;
+  const showToday = today >= minDate && today <= maxDate;
+
+  // Rows
+  let rows = '';
+  Object.entries(byProject).forEach(([pid, ptasks]) => {
+    const proj = getProject(pid);
+    rows += `
+      <div class="flex items-center border-b border-gray-100" style="height:36px">
+        <div class="w-56 flex-shrink-0 px-3 text-xs font-semibold truncate flex items-center gap-2 bg-gray-50">
+          <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${proj?.color || '#999'}"></span>
+          ${escapeHtml(proj?.name || '—')}
+        </div>
+        <div class="relative" style="width:${chartWidth}px;height:100%"></div>
+      </div>
+    `;
+    ptasks.forEach(t => {
+      const start = new Date(t.startDate);
+      const end = new Date(t.dueDate);
+      const offsetDays = Math.round((start - minDate) / 86400000);
+      const durDays = Math.max(1, Math.round((end - start) / 86400000) + 1);
+      const left = offsetDays * dayWidth;
+      const width = durDays * dayWidth - 4;
+      const overdue = end < today && t.status !== 'COMPLETED';
+      const bg = t.status === 'COMPLETED' ? '#86efac' : t.status === 'BLOCKED' ? '#fca5a5' : t.status === 'IN_PROGRESS' ? '#93c5fd' : t.status === 'IN_REVIEW' ? '#fcd34d' : '#d1d5db';
+      rows += `
+        <div class="flex items-center border-b border-gray-100 hover:bg-gray-50" style="height:32px">
+          <div class="w-56 flex-shrink-0 px-3 pl-8 text-xs truncate cursor-pointer" onclick="openTaskDetail('${t.id}')" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}</div>
+          <div class="relative" style="width:${chartWidth}px;height:100%">
+            <div class="absolute rounded-md shadow-sm cursor-pointer flex items-center px-2 text-[11px] font-medium text-gray-800 overflow-hidden ${overdue ? 'ring-2 ring-red-400' : ''}"
+                 style="left:${left}px;top:6px;height:20px;width:${width}px;background:${bg}"
+                 onclick="openTaskDetail('${t.id}')" title="${escapeAttr(t.title)} · ${fmt(t.startDate)} → ${fmt(t.dueDate)}">
+              ${escapeHtml(t.title)}
+            </div>
+          </div>
+        </div>
+      `;
+    });
+  });
+
+  return `
+    <div class="card overflow-hidden">
+      <div class="overflow-x-auto">
+        <div style="min-width:${chartWidth + 224}px">
+          <div class="flex border-b border-gray-200 bg-gray-50 sticky top-0">
+            <div class="w-56 flex-shrink-0 px-3 text-xs font-semibold flex items-center" style="height:28px">Tarea</div>
+            <div class="relative" style="width:${chartWidth}px">
+              ${headers}
+              ${showToday ? `<div class="absolute top-0 bottom-0 border-l-2 border-red-500 pointer-events-none" style="left:${todayOffset}px;height:28px"></div>` : ''}
+            </div>
+          </div>
+          <div class="relative">
+            ${rows}
+            ${showToday ? `<div class="absolute top-0 bottom-0 border-l-2 border-red-400 opacity-50 pointer-events-none" style="left:${224+todayOffset}px;width:2px"></div>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="px-4 py-2 text-xs text-gray-500 flex gap-4 flex-wrap border-t border-gray-100">
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded" style="background:#d1d5db"></span>Pendiente</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded" style="background:#93c5fd"></span>En progreso</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded" style="background:#fcd34d"></span>En revisión</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded" style="background:#86efac"></span>Completada</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 rounded" style="background:#fca5a5"></span>Bloqueada</span>
+        <span class="flex items-center gap-1"><span class="border-l-2 border-red-500 h-3"></span>Hoy</span>
+      </div>
+    </div>
+  `;
+}
+
+// ============ PROJECTS ============
+function renderProjects() {
+  return `
+    ${viewHeader('Proyectos', `${state.projects.length} en total`,
+      `<button class="btn-primary" onclick="openProjectModal()">+ Nuevo</button>`)}
+
+    <div class="px-10 pb-10">
+      ${state.projects.length === 0 ? `<div class="card p-10 text-center text-gray-400">Sin proyectos. Creá el primero.</div>` : `
+      <div class="flex gap-4 overflow-x-auto scroll-hide pb-4">
+        ${PROJECT_STATUS_ORDER.map(k => {
+          const s = PROJECT_STATUS[k];
+          const colProjects = state.projects.filter(p => p.status === k);
+          return `
+            <div class="kanban-col" style="width:280px;flex-shrink:0">
+              <div class="flex items-center justify-between mb-3 px-1">
+                <div class="flex items-center gap-2">
+                  <span class="chip ${s.color}">${s.label}</span>
+                  <span class="text-xs text-gray-500">${colProjects.length}</span>
+                </div>
+              </div>
+              <div>
+                ${colProjects.length === 0 ? '<div class="text-xs text-gray-400 px-2 py-3">Vacío</div>' : colProjects.map(p => projectCard(p)).join('')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>`}
+    </div>
+  `;
+}
+
+function projectCard(p) {
+  const pr = projectProgress(p.id);
+  const taskCount = state.tasks.filter(t => t.projectId === p.id).length;
+  const activeTasks = state.tasks.filter(t => t.projectId === p.id && t.status !== 'COMPLETED').length;
+  const blockedTasks = state.tasks.filter(t => t.projectId === p.id && t.status === 'BLOCKED').length;
+  return `
+    <div class="task-card" onclick="openProjectDetail('${p.id}')">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${p.color}"></span>
+        <span class="text-sm font-semibold truncate flex-1">${escapeHtml(p.name)}</span>
+      </div>
+      ${p.contactName ? `<div class="text-xs text-gray-500 truncate">${escapeHtml(p.contactName)}</div>` : ''}
+      ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="text-xs text-green-700 font-medium mt-1">${fmtMoney(p.monthlyFee)}/mes</div>` : ''}
+      ${taskCount > 0 ? `
+        <div class="mt-3">
+          <div class="flex justify-between text-[11px] text-gray-500 mb-1">
+            <span>${activeTasks} activas${blockedTasks ? ' · ' + blockedTasks + ' bloqueada' + (blockedTasks>1?'s':'') : ''}</span>
+            <span>${pr}%</span>
+          </div>
+          <div class="h-1 bg-gray-100 rounded-full overflow-hidden">
+            <div class="h-full ${p.status==='DONE'||p.status==='ARCHIVED'?'bg-purple-500':'bg-black'} rounded-full" style="width:${pr}%"></div>
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function openProjectDetail(id) {
+  const p = getProject(id);
+  const s = PROJECT_STATUS[p.status] || PROJECT_STATUS.LEAD;
+  const isClosed = p.status === 'DONE' || p.status === 'ARCHIVED';
+  const tasks = state.tasks.filter(t => t.projectId === id);
+  const completedTasks = tasks.filter(t => t.status === 'COMPLETED');
+  const incomes = state.incomes.filter(i => i.projectId === id).reduce((a,b) => a + Number(b.amount||0), 0);
+  const expenses = state.expenses.filter(e => e.projectId === id).reduce((a,b) => a + Number(b.amount||0), 0);
+
+  const totalHrs = completedTasks.reduce((a,t) => a + (Number(t.actualHrs)||0), 0);
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between mb-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full" style="background:${p.color}"></span>
+            <h2 class="text-2xl font-semibold">${escapeHtml(p.name)}</h2>
+            <span class="chip ${s.color}">${s.label}</span>
+          </div>
+          ${p.contactName ? `<p class="text-sm text-gray-500 mt-1">${escapeHtml(p.contactName)}${p.contactEmail ? ' · ' + escapeHtml(p.contactEmail) : ''}</p>` : ''}
+        </div>
+        <div class="flex gap-2">
+          <button class="btn-ghost text-sm" onclick="openProjectModal('${p.id}')">Editar</button>
+          <button class="btn-ghost text-sm text-red-600" onclick="deleteProject('${p.id}')">Eliminar</button>
+        </div>
+      </div>
+
+      ${p.description ? `<p class="text-sm text-gray-700 mb-4">${escapeHtml(p.description)}</p>` : ''}
+
+      <div class="grid grid-cols-2 gap-3 mb-4">
+        <div class="bg-gray-50 p-3 rounded-lg"><div class="text-xs text-gray-500">Ingresos</div><div class="text-lg font-semibold">${fmtMoney(incomes)}</div></div>
+        <div class="bg-gray-50 p-3 rounded-lg"><div class="text-xs text-gray-500">Gastos</div><div class="text-lg font-semibold">${fmtMoney(expenses)}</div></div>
+      </div>
+
+      ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm"><b>Mensualidad:</b> ${fmtMoney(p.monthlyFee)} / mes</div>` : ''}
+
+      ${isClosed ? `
+        <div class="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-4">
+          <div class="text-xs uppercase tracking-wider text-purple-700 font-semibold mb-2">Historial — Proyecto ${p.status === 'DONE' ? 'terminado' : 'archivado'}</div>
+          <div class="grid grid-cols-3 gap-3 text-center">
+            <div><div class="text-lg font-semibold">${completedTasks.length}</div><div class="text-xs text-gray-600">Tareas completadas</div></div>
+            <div><div class="text-lg font-semibold">${tasks.length}</div><div class="text-xs text-gray-600">Tareas totales</div></div>
+            <div><div class="text-lg font-semibold">${totalHrs}h</div><div class="text-xs text-gray-600">Horas invertidas</div></div>
+          </div>
+        </div>
+        <h3 class="text-xs uppercase tracking-wider text-gray-500 mb-2">Tareas realizadas</h3>
+        <div class="space-y-1 max-h-64 overflow-y-auto">
+          ${completedTasks.length === 0 ? '<div class="text-gray-400 text-sm">Sin tareas completadas.</div>' : completedTasks.map(t => {
+            const assignee = getMember(t.assigneeId);
+            return `
+              <div class="flex items-center gap-2 py-2 border-b border-gray-100 cursor-pointer hover:bg-gray-50 px-2 rounded text-sm" onclick="closeModal(); openTaskDetail('${t.id}')">
+                <span class="text-green-600">✓</span>
+                <span class="flex-1 truncate">${escapeHtml(t.title)}</span>
+                ${assignee ? `<span class="text-xs text-gray-500">${escapeHtml(assignee.name)}</span>` : ''}
+                ${t.actualHrs ? `<span class="text-xs text-gray-500">${t.actualHrs}h</span>` : ''}
+                <span class="text-xs text-gray-500">${fmt(t.completedAt)}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : `
+        <h3 class="text-xs uppercase tracking-wider text-gray-500 mb-2">Tareas (${tasks.length})</h3>
+        <div class="space-y-1 max-h-80 overflow-y-auto">
+          ${tasks.length === 0 ? '<div class="text-gray-400 text-sm">Sin tareas.</div>' : tasks.map(t => `
+            <div class="flex items-center gap-2 py-2 border-b border-gray-100 cursor-pointer hover:bg-gray-50 px-2 rounded" onclick="closeModal(); openTaskDetail('${t.id}')">
+              <span class="chip ${STATUS[t.status].color}">${STATUS[t.status].label}</span>
+              <span class="text-sm flex-1">${escapeHtml(t.title)}</span>
+              <span class="text-xs text-gray-500">${fmt(t.dueDate)}</span>
+            </div>
+          `).join('')}
+        </div>
+      `}
+    </div>
+  `);
+}
+
+// ============ TEAM ============
+function renderTeam() {
+  return `
+    ${viewHeader('Equipo', `${state.members.length} miembros`,
+      `<button class="btn-primary" onclick="openMemberModal()">+ Miembro</button>`)}
+
+    <div class="px-10 pb-10 max-w-2xl">
+      <div class="card divide-y divide-gray-100">
+        ${state.members.map(m => {
+          const tasks = state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length;
+          const isMe = m.id === state.currentMemberId;
+          return `
+            <div class="p-4 flex items-center gap-3 hover:bg-gray-50">
+              <span class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
+              <div class="flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">${escapeHtml(m.name)}</span>
+                  ${isMe ? '<span class="chip bg-blue-100 text-blue-700">Vos</span>' : ''}
+                </div>
+                <div class="text-xs text-gray-500">${tasks} tarea${tasks!==1?'s':''} activa${tasks!==1?'s':''}</div>
+              </div>
+              <button class="btn-ghost text-sm" onclick="openMemberModal('${m.id}')">Editar</button>
+              ${!isMe ? `<button class="btn-ghost text-sm" onclick="setCurrentMember('${m.id}')">Ser ${escapeHtml(m.name)}</button>` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+      <p class="text-xs text-gray-500 mt-4">En comentarios podés escribir <b>@Nombre</b> para notificar a un miembro.</p>
+    </div>
+  `;
+}
+
+function setCurrentMember(id) {
+  state.currentMemberId = id;
+  state.user.name = getMember(id).name;
+  save(); renderNav(); render();
+}
+
+function openMemberModal(id) {
+  const m = id ? getMember(id) : { id: null, name: '', color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6,'0') };
+  openModal(`
+    <div class="p-6">
+      <h2 class="text-xl font-semibold mb-4">${id ? 'Editar miembro' : 'Nuevo miembro'}</h2>
+      <form onsubmit="saveMember(event)" class="space-y-3">
+        <input type="hidden" name="id" value="${m.id || ''}" />
+        <div><label class="text-xs text-gray-500">Nombre</label><input name="name" class="input" required autofocus value="${escapeAttr(m.name)}" /></div>
+        <div><label class="text-xs text-gray-500">Color</label><input type="color" name="color" class="input h-10" value="${m.color}" /></div>
+        <div class="flex justify-between pt-3">
+          <div>${id && id !== state.currentMemberId && state.members.length > 1 ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteMember('${id}')">Eliminar</button>` : ''}</div>
+          <div class="flex gap-2">
+            <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function saveMember(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  if (data.id) {
+    Object.assign(getMember(data.id), data);
+    if (data.id === state.currentMemberId) state.user.name = data.name;
+  } else {
+    state.members.push({ ...data, id: uid() });
+  }
+  save(); closeModal(); render();
+}
+
+function deleteMember(id) {
+  if (!confirm('¿Eliminar miembro? Las tareas asignadas quedarán sin asignar.')) return;
+  state.members = state.members.filter(m => m.id !== id);
+  state.tasks.forEach(t => { if (t.assigneeId === id) t.assigneeId = null; });
+  save(); closeModal(); render();
+}
+
+function openMemberPicker() {
+  openModal(`
+    <div class="p-6">
+      <h2 class="text-xl font-semibold mb-4">¿Quién sos?</h2>
+      <div class="space-y-2">
+        ${state.members.map(m => `
+          <button onclick="closeModal(); setCurrentMember('${m.id}')" class="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 border ${m.id === state.currentMemberId ? 'border-blue-300 bg-blue-50' : 'border-gray-200'}">
+            <span class="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
+            <span class="font-medium">${escapeHtml(m.name)}</span>
+            ${m.id === state.currentMemberId ? '<span class="ml-auto chip bg-blue-100 text-blue-700">Actual</span>' : ''}
+          </button>
+        `).join('')}
+      </div>
+      <button class="btn-ghost w-full mt-3 text-sm" onclick="closeModal(); go('team')">Administrar equipo</button>
+    </div>
+  `);
+}
+
+// ============ FINANCE ============
+let financeMonth = new Date().toISOString().slice(0,7); // YYYY-MM
+
+function monthBalance(month) {
+  const m = month || financeMonth;
+  const inc = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
+  const exp = state.expenses.filter(e => e.date && e.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
+  return inc - exp;
+}
+
+function renderFinance() {
+  const inc = state.incomes.filter(i => i.date && i.date.startsWith(financeMonth));
+  const exp = state.expenses.filter(e => e.date && e.date.startsWith(financeMonth));
+  const incTotal = inc.reduce((a,b) => a + Number(b.amount||0), 0);
+  const expTotal = exp.reduce((a,b) => a + Number(b.amount||0), 0);
+  const balance = incTotal - expTotal;
+  const margin = incTotal > 0 ? Math.round(balance / incTotal * 100) : 0;
+
+  return `
+    ${viewHeader('Finanzas', 'Ingresos, gastos y rentabilidad',
+      `<input type="month" class="input max-w-xs" value="${financeMonth}" onchange="financeMonth=this.value; render()" />
+       <button class="btn-ghost" onclick="openIncomeModal()">+ Ingreso</button>
+       <button class="btn-primary" onclick="openExpenseModal()">+ Gasto</button>`)}
+
+    <div class="px-10 pb-10 space-y-6">
+      <div class="grid grid-cols-4 gap-4">
+        <div class="card p-5"><div class="text-xs text-gray-500">Ingresos</div><div class="text-2xl font-semibold text-green-700">${fmtMoney(incTotal)}</div></div>
+        <div class="card p-5"><div class="text-xs text-gray-500">Gastos</div><div class="text-2xl font-semibold text-red-600">${fmtMoney(expTotal)}</div></div>
+        <div class="card p-5"><div class="text-xs text-gray-500">Balance</div><div class="text-2xl font-semibold ${balance>=0?'text-green-700':'text-red-600'}">${fmtMoney(balance)}</div></div>
+        <div class="card p-5"><div class="text-xs text-gray-500">Margen</div><div class="text-2xl font-semibold">${margin}%</div></div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold">Ingresos del mes</h3>
+            <span class="text-xs text-gray-500">${inc.length}</span>
+          </div>
+          <div class="space-y-1 max-h-80 overflow-y-auto">
+            ${inc.length === 0 ? '<div class="text-gray-400 text-sm">Sin ingresos este mes.</div>' : inc.map(i => {
+              const p = getProject(i.projectId);
+              return `
+                <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm group">
+                  <div>
+                    <div class="font-medium">${escapeHtml(i.concept)}</div>
+                    <div class="text-xs text-gray-500">${p ? escapeHtml(p.name) : 'Sin proyecto'} · ${fmt(i.date)}</div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-green-700 font-medium">${fmtMoney(i.amount)}</span>
+                    <button class="opacity-0 group-hover:opacity-100 text-xs text-red-600" onclick="deleteIncome('${i.id}')">✕</button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold">Gastos del mes</h3>
+            <span class="text-xs text-gray-500">${exp.length}</span>
+          </div>
+          <div class="space-y-1 max-h-80 overflow-y-auto">
+            ${exp.length === 0 ? '<div class="text-gray-400 text-sm">Sin gastos este mes.</div>' : exp.map(e => {
+              const p = getProject(e.projectId);
+              return `
+                <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm group">
+                  <div>
+                    <div class="font-medium">${escapeHtml(e.concept)}</div>
+                    <div class="text-xs text-gray-500">${EXPENSE_CAT[e.category]}${p ? ' · ' + escapeHtml(p.name) : ''} · ${fmt(e.date)}</div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-red-600 font-medium">${fmtMoney(e.amount)}</span>
+                    <button class="opacity-0 group-hover:opacity-100 text-xs text-red-600" onclick="deleteExpense('${e.id}')">✕</button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+
+    </div>
+  `;
+}
+
+// ============ REPORTS ============
+function renderReports() {
+  const total = state.tasks.length;
+  const completed = state.tasks.filter(t => t.status === 'COMPLETED').length;
+  const blocked = state.tasks.filter(t => t.status === 'BLOCKED').length;
+  const inProgress = state.tasks.filter(t => t.status === 'IN_PROGRESS').length;
+
+  // Estimation accuracy
+  const estimated = state.tasks.filter(t => t.estimatedHrs && t.actualHrs);
+  const avgDeviation = estimated.length > 0
+    ? Math.round(estimated.reduce((a,t) => a + (t.actualHrs - t.estimatedHrs) / t.estimatedHrs * 100, 0) / estimated.length)
+    : null;
+
+  // Completed last 30 days
+  const since = new Date(); since.setDate(since.getDate() - 30);
+  const recentlyDone = state.tasks.filter(t => t.completedAt && new Date(t.completedAt) >= since).length;
+
+  // Workload per member
+  const workload = state.members.map(m => ({
+    member: m,
+    active: state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length,
+    done30d: state.tasks.filter(t => t.assigneeId === m.id && t.completedAt && new Date(t.completedAt) >= since).length,
+  }));
+
+  return `
+    ${viewHeader('Reportes', 'Tu radar del trabajo')}
+
+    <div class="px-10 pb-10 space-y-6">
+      <div class="grid grid-cols-4 gap-4">
+        ${statCard('Total tareas', total)}
+        ${statCard('Completadas', completed)}
+        ${statCard('En progreso', inProgress)}
+        ${statCard('Bloqueadas', blocked)}
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div class="card p-5">
+          <h3 class="font-semibold mb-3">Últimos 30 días</h3>
+          <div class="text-3xl font-semibold">${recentlyDone}</div>
+          <div class="text-sm text-gray-500">tareas completadas</div>
+        </div>
+        <div class="card p-5">
+          <h3 class="font-semibold mb-3">Precisión de estimación</h3>
+          ${avgDeviation === null
+            ? '<div class="text-sm text-gray-400">Cargá tiempo estimado y real en tus tareas para ver este dato.</div>'
+            : `<div class="text-3xl font-semibold ${Math.abs(avgDeviation)<20?'text-green-700':Math.abs(avgDeviation)<50?'text-amber-700':'text-red-600'}">${avgDeviation>0?'+':''}${avgDeviation}%</div>
+               <div class="text-sm text-gray-500">desvío promedio (real vs estimado)</div>`}
+        </div>
+      </div>
+
+      <div class="card p-5">
+        <h3 class="font-semibold mb-3">Carga por miembro</h3>
+        ${workload.length === 0 ? '<div class="text-sm text-gray-400">Sin miembros.</div>' : `
+        <div class="space-y-3">
+          ${workload.map(w => `
+            <div class="flex items-center gap-3">
+              <span class="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold" style="background:${w.member.color}">${escapeHtml(w.member.name[0])}</span>
+              <span class="text-sm font-medium w-32 truncate">${escapeHtml(w.member.name)}</span>
+              <span class="chip bg-blue-100 text-blue-700">${w.active} activas</span>
+              <span class="chip bg-green-100 text-green-700">${w.done30d} completadas (30d)</span>
+            </div>
+          `).join('')}
+        </div>`}
+      </div>
+    </div>
+  `;
+}
+
+// ============ GUIDE ============
+function renderGuide() {
+  return `
+    ${viewHeader('Manual de uso', 'Las reglas del sistema')}
+
+    <div class="px-10 pb-10 max-w-3xl space-y-6">
+      <div class="card p-6">
+        <h3 class="font-semibold mb-3">Estados de tarea</h3>
+        <div class="space-y-3 text-sm">
+          <div class="flex gap-3"><span class="chip ${STATUS.PENDING.color} w-28 text-center">Pendiente</span><span>Creada, aún no empezada. Es el default.</span></div>
+          <div class="flex gap-3"><span class="chip ${STATUS.IN_PROGRESS.color} w-28 text-center">En progreso</span><span>Estás trabajando hoy. Tenela abierta mientras la hacés.</span></div>
+          <div class="flex gap-3"><span class="chip ${STATUS.IN_REVIEW.color} w-28 text-center">En revisión</span><span>Terminaste, esperás feedback o aprobación.</span></div>
+          <div class="flex gap-3"><span class="chip ${STATUS.COMPLETED.color} w-28 text-center">Completada</span><span>Aprobada. No vuelve a estado anterior.</span></div>
+          <div class="flex gap-3"><span class="chip ${STATUS.BLOCKED.color} w-28 text-center">Bloqueada</span><span>No podés avanzar por un factor externo. <b>Requiere motivo escrito.</b></span></div>
+        </div>
+      </div>
+
+      <div class="card p-6">
+        <h3 class="font-semibold mb-3">Cuándo usar "Bloqueada"</h3>
+        <p class="text-sm text-gray-700 mb-3">Solo cuando hay un factor externo que te impide seguir. No cuando simplemente no tenés ganas o priorizaste otra cosa (eso es "Pendiente").</p>
+        <p class="text-sm text-gray-700 mb-3"><b>Cómo destrabar:</b> en el detalle de la tarea, editá el motivo para dejar claro qué cambió, movela a "En progreso" o "En revisión" según corresponda, y sumá un comentario explicando.</p>
+      </div>
+
+      <div class="card p-6">
+        <h3 class="font-semibold mb-3">Cómo estimar tiempo</h3>
+        <ul class="text-sm text-gray-700 space-y-2 list-disc pl-5">
+          <li>Cargá siempre <b>tiempo estimado</b> al crear la tarea.</li>
+          <li>Al terminarla, actualizá <b>tiempo real</b>.</li>
+          <li>El sistema te muestra tu desvío promedio en Reportes — ajustá tus estimaciones con ese dato.</li>
+          <li>Regla práctica: si una tarea se estira 2x el estimado, partila en dos.</li>
+        </ul>
+      </div>
+
+      <div class="card p-6">
+        <h3 class="font-semibold mb-3">Ritmo recomendado</h3>
+        <ul class="text-sm text-gray-700 space-y-2 list-disc pl-5">
+          <li><b>Todas las mañanas:</b> entrá a "Hoy", revisá tareas del día.</li>
+          <li><b>Lunes:</b> revisá "Esta semana" y reordená prioridades.</li>
+          <li><b>Fin de mes:</b> revisá "Finanzas" y cargá lo que falte.</li>
+          <li><b>Al terminar una tarea:</b> comentá algo útil que hayas aprendido.</li>
+        </ul>
+      </div>
+
+      <div class="card p-6">
+        <h3 class="font-semibold mb-3">Menciones y notificaciones</h3>
+        <ul class="text-sm text-gray-700 space-y-2 list-disc pl-5">
+          <li>En cualquier comentario escribí <b>@Nombre</b> para notificar a ese miembro.</li>
+          <li>Cuando asignás una tarea a alguien, le llega una notificación.</li>
+          <li>La campana arriba a la izquierda muestra las notificaciones sin leer.</li>
+          <li>Podés cambiar entre miembros haciendo click en tu nombre abajo del sidebar.</li>
+        </ul>
+      </div>
+
+      <div class="card p-6">
+        <h3 class="font-semibold mb-3">Estados de proyecto</h3>
+        <div class="text-sm text-gray-700 space-y-1">
+          <div><b>Lead:</b> primer contacto, sin compromiso aún.</div>
+          <div><b>Posible:</b> hay chance concreta de cerrarlo.</div>
+          <div><b>En desarrollo:</b> estamos trabajando activamente.</div>
+          <div><b>Activo mensualidad:</b> cliente recurrente cobrando fee fijo.</div>
+          <div><b>Pausado:</b> detenido temporalmente.</div>
+          <div><b>Terminado:</b> finalizado, sin actividad.</div>
+          <div><b>Archivado:</b> fuera del radar.</div>
+        </div>
+      </div>
+
+      <div class="card p-6">
+        <h3 class="font-semibold mb-3">Gantt</h3>
+        <p class="text-sm text-gray-700">En Tareas → Gantt, las tareas que tengan fecha de inicio <b>y</b> fin se muestran como barras en el tiempo. La línea roja es hoy. Las barras con marco rojo están vencidas.</p>
+      </div>
+
+      <div class="card p-6 bg-green-50 border-green-200">
+        <h3 class="font-semibold mb-2">✓ Tus datos están guardados</h3>
+        <p class="text-sm text-gray-700">Todo lo que hacés se guarda automáticamente en tu navegador (localStorage). No necesitás exportar nada para que no se pierda. El botón <b>Backup</b> es solo por si limpiás caché o cambiás de máquina.</p>
+      </div>
+    </div>
+  `;
+}
+
+// ============ MODALS ============
+function openModal(html) {
+  document.getElementById('modalContent').innerHTML = html;
+  document.getElementById('modal').classList.remove('hidden');
+  document.getElementById('modal').classList.add('flex');
+}
+function closeModal() {
+  document.getElementById('modal').classList.add('hidden');
+  document.getElementById('modal').classList.remove('flex');
+}
+document.getElementById('modal').addEventListener('click', (e) => {
+  if (e.target.id === 'modal') closeModal();
+});
+
+// ---- Task modal ----
+function openTaskModal(id) {
+  const t = id ? getTask(id) : { id: null, title: '', description: '', status: 'PENDING', priority: 'MEDIUM', projectId: state.projects[0]?.id || '', assigneeId: state.currentMemberId, startDate: todayISO(), dueDate: '', estimatedHrs: '', actualHrs: '' };
+  const isNew = !id;
+  const isDone = t.status === 'COMPLETED';
+  openModal(`
+    <div class="p-6">
+      <h2 class="text-xl font-semibold mb-4">${id ? 'Editar tarea' : 'Nueva tarea'}</h2>
+      <form id="taskForm" class="space-y-3" onsubmit="saveTask(event)">
+        <input type="hidden" name="id" value="${t.id || ''}" />
+        <div>
+          <label class="text-xs text-gray-500">Título</label>
+          <input name="title" class="input" required autofocus value="${escapeAttr(t.title)}" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Descripción</label>
+          <textarea name="description" class="input" rows="2">${escapeHtml(t.description || '')}</textarea>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-500">Proyecto</label>
+            <select name="projectId" required>
+              ${state.projects.length === 0 ? '<option value="">(Creá un proyecto primero)</option>' :
+                state.projects.map(p => `<option value="${p.id}" ${t.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Prioridad</label>
+            <select name="priority">
+              ${Object.entries(PRIORITY).map(([k,v]) => `<option value="${k}" ${t.priority===k?'selected':''}>${v.label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Estado</label>
+            <select name="status">
+              ${STATUS_ORDER.map(k => `<option value="${k}" ${t.status===k?'selected':''}>${STATUS[k].label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Asignado a</label>
+            <select name="assigneeId">
+              <option value="">Sin asignar</option>
+              ${state.members.map(m => `<option value="${m.id}" ${t.assigneeId===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Fecha límite</label>
+            <input type="date" name="dueDate" class="input" value="${t.dueDate || ''}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Fecha inicio</label>
+            <input type="date" name="startDate" class="input" value="${t.startDate || ''}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Horas estimadas</label>
+            <input type="number" step="0.25" name="estimatedHrs" class="input" value="${t.estimatedHrs || ''}" placeholder="0" />
+          </div>
+          ${!isNew ? `
+          <div>
+            <label class="text-xs text-gray-500">Horas reales ${isDone ? '' : '<span class="text-gray-400">(al finalizar)</span>'}</label>
+            <input type="number" step="0.25" name="actualHrs" class="input" value="${t.actualHrs || ''}" placeholder="0" />
+          </div>` : ''}
+        </div>
+        <div id="blockedReasonBox" class="${t.status === 'BLOCKED' ? '' : 'hidden'}">
+          <label class="text-xs text-red-600">Motivo del bloqueo <b>(obligatorio)</b></label>
+          <textarea name="blockedReason" class="input" rows="2">${escapeHtml(t.blockedReason || '')}</textarea>
+        </div>
+        <div class="flex justify-between pt-3">
+          <div>${id ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteTask('${id}')">Eliminar</button>` : ''}</div>
+          <div class="flex gap-2">
+            <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  `);
+
+  const statusSel = document.querySelector('#taskForm select[name="status"]');
+  statusSel.addEventListener('change', (e) => {
+    document.getElementById('blockedReasonBox').classList.toggle('hidden', e.target.value !== 'BLOCKED');
+  });
+}
+
+function saveTask(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const data = Object.fromEntries(fd.entries());
+
+  if (data.status === 'BLOCKED' && !data.blockedReason?.trim()) {
+    alert('Tenés que escribir un motivo para marcarla como bloqueada.');
+    return;
+  }
+  if (!data.projectId) {
+    alert('Creá un proyecto primero.');
+    return;
+  }
+
+  data.estimatedHrs = data.estimatedHrs ? Number(data.estimatedHrs) : null;
+  data.actualHrs    = data.actualHrs    ? Number(data.actualHrs)    : null;
+
+  // Si se completa y no cargó horas reales, pedirlas
+  if (data.status === 'COMPLETED' && !data.actualHrs) {
+    const hrs = prompt('¿Cuántas horas te llevó realmente?' + (data.estimatedHrs ? ` (estimaste ${data.estimatedHrs}h)` : ''), data.estimatedHrs || '');
+    if (hrs === null) return;
+    const n = Number(hrs);
+    if (!isNaN(n) && n > 0) data.actualHrs = n;
+  }
+
+  if (data.id) {
+    const t = getTask(data.id);
+    const oldStatus = t.status;
+    const oldAssignee = t.assigneeId;
+    Object.assign(t, data);
+    if (data.status !== oldStatus) {
+      pushHistory(t.id, 'status', oldStatus, data.status);
+      if (data.status === 'COMPLETED') t.completedAt = new Date().toISOString();
+    }
+    if (data.assigneeId && data.assigneeId !== oldAssignee && data.assigneeId !== state.currentMemberId) {
+      notify(data.assigneeId, t.id, `Te asignaron: ${t.title}`);
+    }
+    t.updatedAt = new Date().toISOString();
+  } else {
+    const t = {
+      ...data,
+      id: uid(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      completedAt: data.status === 'COMPLETED' ? new Date().toISOString() : null,
+    };
+    state.tasks.push(t);
+    pushHistory(t.id, 'created', null, null);
+    if (data.assigneeId && data.assigneeId !== state.currentMemberId) {
+      notify(data.assigneeId, t.id, `Te asignaron: ${t.title}`);
+    }
+  }
+  save();
+  closeModal();
+  render();
+}
+
+function deleteTask(id) {
+  if (!confirm('¿Eliminar esta tarea?')) return;
+  state.tasks = state.tasks.filter(t => t.id !== id);
+  state.comments = state.comments.filter(c => c.taskId !== id);
+  state.history  = state.history.filter(h => h.taskId !== id);
+  save(); closeModal(); render();
+}
+
+// ---- Task detail ----
+function openTaskDetail(id) {
+  const t = getTask(id);
+  const p = getProject(t.projectId);
+  const comments = state.comments.filter(c => c.taskId === id).sort((a,b) => a.createdAt.localeCompare(b.createdAt));
+  const history  = state.history.filter(h => h.taskId === id).sort((a,b) => a.createdAt.localeCompare(b.createdAt));
+  const feed = [...comments.map(c => ({type:'comment', ...c})), ...history.map(h => ({type:'history', ...h}))].sort((a,b) => a.createdAt.localeCompare(b.createdAt));
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between mb-2">
+        <div class="flex-1 pr-4">
+          <div class="flex items-center gap-2 mb-1">
+            ${p ? `<span class="text-xs font-medium" style="color:${p.color}">● ${escapeHtml(p.name)}</span>` : ''}
+            <span class="chip ${PRIORITY[t.priority].color}">${PRIORITY[t.priority].label}</span>
+          </div>
+          <h2 class="text-xl font-semibold">${escapeHtml(t.title)}</h2>
+        </div>
+        <button class="btn-ghost text-sm" onclick="openTaskModal('${t.id}')">Editar</button>
+      </div>
+
+      ${t.description ? `<p class="text-sm text-gray-700 my-3">${escapeHtml(t.description)}</p>` : ''}
+
+      <div class="flex flex-wrap gap-2 my-4">
+        <span class="chip ${STATUS[t.status].color}">${STATUS[t.status].label}</span>
+        ${t.dueDate ? `<span class="chip bg-gray-100 text-gray-700">Vence ${fmt(t.dueDate)}</span>` : ''}
+        ${t.estimatedHrs ? `<span class="chip bg-gray-100 text-gray-700">Est: ${t.estimatedHrs}h</span>` : ''}
+        ${t.actualHrs ? `<span class="chip bg-gray-100 text-gray-700">Real: ${t.actualHrs}h</span>` : ''}
+      </div>
+
+      <div class="grid grid-cols-5 gap-1 mb-4">
+        ${STATUS_ORDER.map(s => `
+          <button class="chip ${t.status===s?STATUS[s].color:'bg-gray-100 text-gray-500'} py-2" onclick="quickStatus('${t.id}','${s}')">${STATUS[s].label}</button>
+        `).join('')}
+      </div>
+
+      ${t.status === 'BLOCKED' && t.blockedReason ? `
+        <div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+          <div class="text-xs font-semibold text-red-700 mb-1">Motivo del bloqueo</div>
+          <div class="text-sm text-red-900">${escapeHtml(t.blockedReason)}</div>
+        </div>
+      ` : ''}
+
+      <h3 class="text-xs uppercase tracking-wider text-gray-500 mb-2">Actividad</h3>
+      <div class="space-y-2 max-h-60 overflow-y-auto mb-3">
+        ${feed.length === 0 ? '<div class="text-sm text-gray-400">Sin actividad aún.</div>' : feed.map(e => {
+          if (e.type === 'comment') {
+            const author = getMember(e.authorId);
+            return `<div class="bg-gray-50 rounded-lg p-3 text-sm">
+              <div class="flex items-center gap-2 mb-1">
+                ${author ? `<span class="w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-semibold" style="background:${author.color}">${escapeHtml(author.name[0])}</span><span class="text-xs font-medium">${escapeHtml(author.name)}</span>` : ''}
+                <span class="text-xs text-gray-500">${new Date(e.createdAt).toLocaleString('es-AR')}</span>
+              </div>
+              <div class="text-gray-900">${renderMentions(e.content)}</div>
+            </div>`;
+          } else {
+            const msg = e.action === 'created' ? 'Tarea creada' : `Estado: ${STATUS[e.from]?.label || e.from} → ${STATUS[e.to]?.label || e.to}`;
+            return `<div class="text-xs text-gray-500 px-3">${msg} · ${new Date(e.createdAt).toLocaleString('es-AR')}</div>`;
+          }
+        }).join('')}
+      </div>
+
+      <form onsubmit="addComment(event, '${t.id}')" class="flex gap-2">
+        <input name="content" class="input" placeholder="Comentario... (@nombre para notificar)" required />
+        <button class="btn-primary">Enviar</button>
+      </form>
+      <p class="text-[11px] text-gray-400 mt-1">Miembros: ${state.members.map(m => '@' + m.name).join(', ')}</p>
+    </div>
+  `);
+}
+
+function quickStatus(taskId, status) {
+  const t = getTask(taskId);
+  if (status === 'BLOCKED' && !t.blockedReason) {
+    const reason = prompt('Motivo del bloqueo (obligatorio):');
+    if (!reason?.trim()) return;
+    t.blockedReason = reason.trim();
+  }
+  if (status === 'COMPLETED' && !t.actualHrs) {
+    const hrs = prompt('¿Cuántas horas te llevó realmente?' + (t.estimatedHrs ? ` (estimaste ${t.estimatedHrs}h)` : ''), t.estimatedHrs || '');
+    if (hrs === null) return;
+    const n = Number(hrs);
+    if (!isNaN(n) && n > 0) t.actualHrs = n;
+  }
+  const oldStatus = t.status;
+  t.status = status;
+  t.updatedAt = new Date().toISOString();
+  if (status === 'COMPLETED') t.completedAt = new Date().toISOString();
+  pushHistory(taskId, 'status', oldStatus, status);
+  save();
+  openTaskDetail(taskId);
+}
+
+function addComment(e, taskId) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const content = fd.get('content');
+  const mentions = parseMentions(content);
+  state.comments.push({
+    id: uid(),
+    taskId,
+    authorId: state.currentMemberId,
+    content,
+    mentions,
+    createdAt: new Date().toISOString(),
+  });
+  const task = getTask(taskId);
+  mentions.forEach(mid => notify(mid, taskId, `Te mencionaron en "${task.title}"`));
+  save();
+  openTaskDetail(taskId);
+}
+
+// ---- Project modal ----
+function openProjectModal(id) {
+  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', contactName: '', contactEmail: '' };
+  openModal(`
+    <div class="p-6">
+      <h2 class="text-xl font-semibold mb-4">${id ? 'Editar proyecto' : 'Nuevo proyecto'}</h2>
+      <form onsubmit="saveProject(event)" class="space-y-3">
+        <input type="hidden" name="id" value="${p.id || ''}" />
+        <div>
+          <label class="text-xs text-gray-500">Nombre</label>
+          <input name="name" class="input" required autofocus value="${escapeAttr(p.name)}" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Descripción</label>
+          <textarea name="description" class="input" rows="2">${escapeHtml(p.description || '')}</textarea>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="col-span-2">
+            <label class="text-xs text-gray-500">Estado</label>
+            <select name="status">
+              ${PROJECT_STATUS_ORDER.map(k => `<option value="${k}" ${p.status===k?'selected':''}>${PROJECT_STATUS[k].label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Contacto</label>
+            <input name="contactName" class="input" value="${escapeAttr(p.contactName || '')}" placeholder="Nombre" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Email contacto</label>
+            <input type="email" name="contactEmail" class="input" value="${escapeAttr(p.contactEmail || '')}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Inicio</label>
+            <input type="date" name="startDate" class="input" value="${p.startDate || ''}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Fin</label>
+            <input type="date" name="endDate" class="input" value="${p.endDate || ''}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Presupuesto total</label>
+            <input type="number" name="budget" class="input" value="${p.budget || ''}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Mensualidad</label>
+            <input type="number" name="monthlyFee" class="input" value="${p.monthlyFee || ''}" placeholder="0" />
+          </div>
+          <div class="col-span-2">
+            <label class="text-xs text-gray-500">Color</label>
+            <input type="color" name="color" class="input h-10" value="${p.color}" />
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 pt-3">
+          <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" class="btn-primary">Guardar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function saveProject(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  data.budget     = data.budget     ? Number(data.budget)     : null;
+  data.monthlyFee = data.monthlyFee ? Number(data.monthlyFee) : null;
+  if (data.id) {
+    Object.assign(getProject(data.id), data);
+  } else {
+    state.projects.push({ ...data, id: uid() });
+  }
+  save(); closeModal(); render();
+}
+
+function deleteProject(id) {
+  const tasks = state.tasks.filter(t => t.projectId === id);
+  if (tasks.length > 0 && !confirm(`Este proyecto tiene ${tasks.length} tareas asociadas. ¿Eliminar igual?`)) return;
+  if (!confirm('¿Eliminar proyecto?')) return;
+  state.projects = state.projects.filter(p => p.id !== id);
+  state.tasks    = state.tasks.filter(t => t.projectId !== id);
+  save(); closeModal(); render();
+}
+
+// ---- Income / Expense modals ----
+function openIncomeModal(id) {
+  const i = id ? state.incomes.find(x => x.id === id) : { id: null, concept: '', amount: '', date: todayISO(), projectId: '' };
+  openModal(`
+    <div class="p-6">
+      <h2 class="text-xl font-semibold mb-4">${id ? 'Editar ingreso' : 'Nuevo ingreso'}</h2>
+      <form onsubmit="saveIncome(event)" class="space-y-3">
+        <input type="hidden" name="id" value="${i.id || ''}" />
+        <div><label class="text-xs text-gray-500">Concepto</label><input name="concept" class="input" required autofocus value="${escapeAttr(i.concept)}" /></div>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="text-xs text-gray-500">Monto</label><input type="number" step="0.01" name="amount" class="input" required value="${i.amount}" /></div>
+          <div><label class="text-xs text-gray-500">Fecha</label><input type="date" name="date" class="input" required value="${i.date}" /></div>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Proyecto</label>
+          <select name="projectId">
+            <option value="">Sin proyecto</option>
+            ${state.projects.map(p => `<option value="${p.id}" ${i.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="flex justify-end gap-2 pt-3">
+          <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" class="btn-primary">Guardar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function saveIncome(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  data.amount = Number(data.amount);
+  if (data.id) Object.assign(state.incomes.find(x => x.id === data.id), data);
+  else state.incomes.push({ ...data, id: uid() });
+  save(); closeModal(); render();
+}
+function deleteIncome(id) {
+  if (!confirm('¿Eliminar ingreso?')) return;
+  state.incomes = state.incomes.filter(x => x.id !== id);
+  save(); render();
+}
+
+function openExpenseModal(id) {
+  const ex = id ? state.expenses.find(x => x.id === id) : { id: null, concept: '', amount: '', date: todayISO(), category: 'VARIABLE', projectId: '' };
+  openModal(`
+    <div class="p-6">
+      <h2 class="text-xl font-semibold mb-4">${id ? 'Editar gasto' : 'Nuevo gasto'}</h2>
+      <form onsubmit="saveExpense(event)" class="space-y-3">
+        <input type="hidden" name="id" value="${ex.id || ''}" />
+        <div><label class="text-xs text-gray-500">Concepto</label><input name="concept" class="input" required autofocus value="${escapeAttr(ex.concept)}" /></div>
+        <div class="grid grid-cols-3 gap-3">
+          <div><label class="text-xs text-gray-500">Monto</label><input type="number" step="0.01" name="amount" class="input" required value="${ex.amount}" /></div>
+          <div><label class="text-xs text-gray-500">Fecha</label><input type="date" name="date" class="input" required value="${ex.date}" /></div>
+          <div>
+            <label class="text-xs text-gray-500">Categoría</label>
+            <select name="category">
+              ${Object.entries(EXPENSE_CAT).map(([k,v]) => `<option value="${k}" ${ex.category===k?'selected':''}>${v}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Proyecto (para rentabilidad)</label>
+          <select name="projectId">
+            <option value="">Sin proyecto</option>
+            ${state.projects.map(p => `<option value="${p.id}" ${ex.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="flex justify-end gap-2 pt-3">
+          <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" class="btn-primary">Guardar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function saveExpense(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  data.amount = Number(data.amount);
+  if (data.id) Object.assign(state.expenses.find(x => x.id === data.id), data);
+  else state.expenses.push({ ...data, id: uid() });
+  save(); closeModal(); render();
+}
+function deleteExpense(id) {
+  if (!confirm('¿Eliminar gasto?')) return;
+  state.expenses = state.expenses.filter(x => x.id !== id);
+  save(); render();
+}
+
+// ============ NOTIFICATIONS PANEL ============
+function toggleNotifications() {
+  const panel = document.getElementById('notifPanel');
+  if (panel.classList.contains('hidden')) {
+    renderNotifications();
+    panel.classList.remove('hidden');
+  } else {
+    panel.classList.add('hidden');
+  }
+}
+
+function closeNotifications() {
+  document.getElementById('notifPanel').classList.add('hidden');
+}
+
+function renderNotifications() {
+  const list = document.getElementById('notifList');
+  const mine = state.notifications
+    .filter(n => n.forMemberId === state.currentMemberId)
+    .sort((a,b) => b.createdAt.localeCompare(a.createdAt));
+  if (mine.length === 0) {
+    list.innerHTML = `<div class="p-8 text-center text-gray-400 text-sm">Sin notificaciones.</div>`;
+    return;
+  }
+  list.innerHTML = mine.map(n => {
+    const from = getMember(n.fromMemberId);
+    return `
+      <div class="p-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer ${n.read?'':'bg-blue-50'}" onclick="openNotification('${n.id}')">
+        <div class="flex items-start gap-2">
+          ${from ? `<span class="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0" style="background:${from.color}">${escapeHtml(from.name[0])}</span>` : ''}
+          <div class="flex-1 min-w-0">
+            <div class="text-sm ${n.read?'text-gray-600':'font-medium'}">${escapeHtml(n.text)}</div>
+            <div class="text-[11px] text-gray-500 mt-0.5">${new Date(n.createdAt).toLocaleString('es-AR')}</div>
+          </div>
+          ${n.read?'':'<span class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0 mt-2"></span>'}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function openNotification(id) {
+  const n = state.notifications.find(x => x.id === id);
+  if (!n) return;
+  n.read = true;
+  save();
+  closeNotifications();
+  renderNav();
+  if (n.taskId) openTaskDetail(n.taskId);
+}
+
+function markAllRead() {
+  state.notifications.forEach(n => { if (n.forMemberId === state.currentMemberId) n.read = true; });
+  save();
+  renderNav();
+  renderNotifications();
+}
+
+// Close panel on outside click
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('notifPanel');
+  const bell = document.getElementById('bellBtn');
+  if (!panel.classList.contains('hidden') && !panel.contains(e.target) && !bell.contains(e.target)) {
+    panel.classList.add('hidden');
+  }
+});
+
+// ============ EXPORT / IMPORT ============
+function exportData() {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = `pragma-backup-${todayISO()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+function importData() {
+  document.getElementById('fileInput').click();
+}
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const imported = JSON.parse(ev.target.result);
+      if (!confirm('Esto reemplaza todos los datos actuales. ¿Continuar?')) return;
+      state = { ...structuredClone(DEFAULT_STATE), ...imported };
+      save(); render();
+    } catch {
+      alert('Archivo inválido.');
+    }
+  };
+  reader.readAsText(file);
+});
+
+// ============ UTILS ============
+function escapeHtml(s) { return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s) { return escapeHtml(s); }
+
+function attachViewEvents() {}
+
+// ============ KEYBOARD ============
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'n') { e.preventDefault(); openTaskModal(); }
+  if (e.key === 'Escape') closeModal();
+});
+
+// ============ BOOT ============
+renderNav();
+render();
+</script>
+</body>
+</html>
