@@ -951,20 +951,45 @@ function openMemberPicker() {
 // ============ FINANCE ============
 let financeMonth = new Date().toISOString().slice(0,7); // YYYY-MM
 
+function getAutoIncomes(month) {
+  // Genera ingresos virtuales a partir de proyectos ACTIVE_RECURRING con mensualidad
+  const out = [];
+  state.projects.forEach(p => {
+    if (p.status !== 'ACTIVE_RECURRING' || !p.monthlyFee) return;
+    const startMonth = (p.startDate || '').slice(0, 7);
+    if (startMonth && startMonth > month) return; // aún no arrancaba
+    const endMonth = (p.endDate || '').slice(0, 7);
+    if (endMonth && endMonth < month) return; // ya terminó
+    out.push({
+      id: `auto-${p.id}-${month}`,
+      amount: Number(p.monthlyFee),
+      date: month + '-01',
+      concept: `Mensualidad · ${p.name}`,
+      projectId: p.id,
+      auto: true,
+    });
+  });
+  return out;
+}
+
 function monthBalance(month) {
   const m = month || financeMonth;
   const inc = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
+  const autoInc = getAutoIncomes(m).reduce((a,b) => a + Number(b.amount||0), 0);
   const exp = state.expenses.filter(e => e.date && e.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
-  return inc - exp;
+  return inc + autoInc - exp;
 }
 
 function renderFinance() {
-  const inc = state.incomes.filter(i => i.date && i.date.startsWith(financeMonth));
+  const realInc = state.incomes.filter(i => i.date && i.date.startsWith(financeMonth));
+  const autoInc = getAutoIncomes(financeMonth);
+  const inc = [...autoInc, ...realInc];
   const exp = state.expenses.filter(e => e.date && e.date.startsWith(financeMonth));
   const incTotal = inc.reduce((a,b) => a + Number(b.amount||0), 0);
   const expTotal = exp.reduce((a,b) => a + Number(b.amount||0), 0);
   const balance = incTotal - expTotal;
   const margin = incTotal > 0 ? Math.round(balance / incTotal * 100) : 0;
+  const autoTotal = autoInc.reduce((a,b) => a + Number(b.amount||0), 0);
 
   return `
     ${viewHeader('Finanzas', 'Ingresos, gastos y rentabilidad',
@@ -984,11 +1009,22 @@ function renderFinance() {
         <div class="card p-5">
           <div class="flex items-center justify-between mb-3">
             <h3 class="font-semibold">Ingresos del mes</h3>
-            <span class="text-xs text-gray-500">${inc.length}</span>
+            <span class="text-xs text-gray-500">${inc.length}${autoInc.length ? ` · ${fmtMoney(autoTotal)} recurrente` : ''}</span>
           </div>
           <div class="space-y-1 max-h-80 overflow-y-auto">
             ${inc.length === 0 ? '<div class="text-gray-400 text-sm">Sin ingresos este mes.</div>' : inc.map(i => {
               const p = getProject(i.projectId);
+              if (i.auto) {
+                return `
+                  <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm bg-green-50/40 rounded px-1 cursor-pointer hover:bg-green-50" onclick="openProjectDetail('${i.projectId}')" title="Se actualiza desde el proyecto">
+                    <div>
+                      <div class="font-medium flex items-center gap-1.5"><span class="text-[10px] chip bg-green-100 text-green-700">AUTO</span>${escapeHtml(i.concept)}</div>
+                      <div class="text-xs text-gray-500">Mensualidad recurrente</div>
+                    </div>
+                    <span class="text-green-700 font-medium">${fmtMoney(i.amount)}</span>
+                  </div>
+                `;
+              }
               return `
                 <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm group">
                   <div>
