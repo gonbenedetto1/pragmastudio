@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Pragma Studio</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   html, body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif; }
   body { background: #fafafa; color: #111; }
@@ -30,6 +31,52 @@
 </head>
 <body>
 
+<!-- Setup overlay (Supabase config) -->
+<div id="setupOverlay" class="hidden fixed inset-0 z-[100] bg-white overflow-y-auto">
+  <div class="max-w-2xl mx-auto p-10">
+    <h1 class="text-3xl font-semibold mb-2">Conectar Supabase</h1>
+    <p class="text-gray-600 mb-6">Para sincronizar entre dispositivos y pestañas en tiempo real.</p>
+
+    <div class="card p-6 mb-6">
+      <h2 class="font-semibold mb-3">Setup (una sola vez)</h2>
+      <ol class="text-sm space-y-3 list-decimal pl-5 text-gray-700">
+        <li>En tu proyecto de Supabase: <b>SQL Editor → New query</b>. Pegá y corré esto:
+          <pre class="bg-gray-900 text-gray-100 text-xs p-3 rounded mt-2 overflow-x-auto"><code>create table if not exists pragma_state (
+  id text primary key,
+  data jsonb not null,
+  writer text,
+  updated_at timestamptz default now()
+);
+
+alter table pragma_state enable row level security;
+
+create policy "open access" on pragma_state
+  for all using (true) with check (true);
+
+alter publication supabase_realtime add table pragma_state;</code></pre>
+        </li>
+        <li>Andá a <b>Project Settings → API</b>. Copiá <b>Project URL</b> y la <b>anon public key</b>.</li>
+        <li>Pegalas abajo.</li>
+      </ol>
+    </div>
+
+    <form onsubmit="saveSupabaseConfig(event)" class="space-y-3">
+      <div>
+        <label class="text-sm font-medium">Project URL</label>
+        <input id="sbUrlInput" class="input font-mono text-xs" placeholder="https://xxxxxxxxxxxx.supabase.co" required />
+      </div>
+      <div>
+        <label class="text-sm font-medium">anon public key</label>
+        <textarea id="sbKeyInput" class="input font-mono text-xs" rows="4" placeholder="eyJhbGciOi..." required></textarea>
+      </div>
+      <div class="flex justify-between items-center pt-2">
+        <button type="button" onclick="skipSetup()" class="btn-ghost text-sm">Usar solo localmente</button>
+        <button type="submit" class="btn-primary">Conectar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div id="app" class="flex h-screen overflow-hidden">
   <!-- Sidebar -->
   <aside class="w-60 border-r border-gray-200 bg-white flex flex-col">
@@ -49,8 +96,9 @@
     <nav id="nav" class="px-3 flex-1 space-y-1"></nav>
     <div class="p-3 border-t border-gray-100">
       <div id="userInfo" class="mb-2"></div>
+      <div id="syncStatus" class="text-[11px] text-gray-400 mb-2 px-2 flex items-center gap-1.5"></div>
       <div class="flex gap-1">
-        <button onclick="exportData()" class="btn-ghost flex-1 text-xs" title="Backup local (solo por seguridad)">Backup</button>
+        <button onclick="exportData()" class="btn-ghost flex-1 text-xs" title="Backup local">Backup</button>
         <button onclick="importData()" class="btn-ghost flex-1 text-xs">Importar</button>
       </div>
     </div>
@@ -102,7 +150,141 @@ function load() {
     return { ...structuredClone(DEFAULT_STATE), ...JSON.parse(raw) };
   } catch { return structuredClone(DEFAULT_STATE); }
 }
-function save() { localStorage.setItem('pragma_state', JSON.stringify(state)); }
+
+// ============ CLOUD SYNC (Supabase) ============
+const SUPABASE_URL = 'https://vvstklprisbqngocgsal.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ2c3RrbHByaXNicW5nb2Nnc2FsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2NTQyNzEsImV4cCI6MjA5MjIzMDI3MX0.Q7LywZvDUQh6g-EpuX3_rXmiygwP8rlOD_KmIR9eze8';
+
+let sb = null;
+let sbChannel = null;
+let cloudReady = false;
+let saveTimer = null;
+const CLIENT_ID = (() => {
+  let id = localStorage.getItem('pragma_client_id');
+  if (!id) { id = Math.random().toString(36).slice(2); localStorage.setItem('pragma_client_id', id); }
+  return id;
+})();
+
+function getSupabaseConfig() {
+  if (SUPABASE_URL && SUPABASE_KEY) return { url: SUPABASE_URL, key: SUPABASE_KEY };
+  try {
+    const raw = localStorage.getItem('pragma_supabase_config');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function setSyncStatus(text, color) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full" style="background:${color}"></span><span>${text}</span>`;
+}
+
+async function initSupabase() {
+  const config = getSupabaseConfig();
+  if (!config) {
+    document.getElementById('setupOverlay').classList.remove('hidden');
+    setSyncStatus('Solo local', '#999');
+    return;
+  }
+  try {
+    sb = supabase.createClient(config.url, config.key);
+    setSyncStatus('Conectando...', '#fbbf24');
+
+    // Initial fetch
+    const { data, error } = await sb.from('pragma_state').select('*').eq('id', 'main').maybeSingle();
+    if (error) throw error;
+
+    if (data && data.data) {
+      state = { ...structuredClone(DEFAULT_STATE), ...data.data };
+      localStorage.setItem('pragma_state', JSON.stringify(state));
+      renderNav();
+      render();
+    } else {
+      // First-time: push current local state to cloud
+      await sb.from('pragma_state').upsert({ id: 'main', data: state, writer: CLIENT_ID });
+    }
+
+    cloudReady = true;
+    setSyncStatus('Sincronizado', '#22c55e');
+
+    // Subscribe to realtime changes
+    sbChannel = sb.channel('pragma-state-changes')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'pragma_state', filter: 'id=eq.main' },
+        (payload) => {
+          const newRow = payload.new;
+          if (!newRow || newRow.writer === CLIENT_ID) return;
+          state = { ...structuredClone(DEFAULT_STATE), ...newRow.data };
+          localStorage.setItem('pragma_state', JSON.stringify(state));
+          setSyncStatus('Sincronizado', '#22c55e');
+          renderNav();
+          render();
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') setSyncStatus('Sincronizado', '#22c55e');
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setSyncStatus('Sin tiempo real', '#fbbf24');
+      });
+  } catch (err) {
+    console.error('Supabase init error:', err);
+    setSyncStatus('Error de conexión', '#ef4444');
+    alert('Error al conectar con Supabase:\n\n' + (err.message || err) + '\n\nRevisá la URL, la key y que la tabla pragma_state exista.');
+    localStorage.removeItem('pragma_supabase_config');
+    document.getElementById('setupOverlay').classList.remove('hidden');
+  }
+}
+
+function save() {
+  localStorage.setItem('pragma_state', JSON.stringify(state));
+  if (!sb || !cloudReady) return;
+  clearTimeout(saveTimer);
+  setSyncStatus('Guardando...', '#fbbf24');
+  saveTimer = setTimeout(async () => {
+    try {
+      const { error } = await sb.from('pragma_state').upsert({
+        id: 'main',
+        data: state,
+        writer: CLIENT_ID,
+        updated_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+      setSyncStatus('Sincronizado', '#22c55e');
+    } catch (err) {
+      console.error('Save error:', err);
+      setSyncStatus('Error al guardar', '#ef4444');
+    }
+  }, 500);
+}
+
+function saveSupabaseConfig(e) {
+  e.preventDefault();
+  const url = document.getElementById('sbUrlInput').value.trim().replace(/\/$/, '');
+  const key = document.getElementById('sbKeyInput').value.trim();
+  if (!url.startsWith('https://') || !url.includes('.supabase.co')) {
+    alert('La URL debe ser tipo https://xxxxxx.supabase.co');
+    return;
+  }
+  if (key.length < 20) {
+    alert('La key parece incompleta.');
+    return;
+  }
+  localStorage.setItem('pragma_supabase_config', JSON.stringify({ url, key }));
+  document.getElementById('setupOverlay').classList.add('hidden');
+  initSupabase();
+}
+
+function skipSetup() {
+  localStorage.setItem('pragma_cloud_skip', '1');
+  document.getElementById('setupOverlay').classList.add('hidden');
+  setSyncStatus('Solo local', '#999');
+}
+
+function reconfigureCloud() {
+  if (!confirm('Esto te va a pedir la config de Supabase de nuevo. ¿Seguir?')) return;
+  localStorage.removeItem('pragma_supabase_config');
+  localStorage.removeItem('pragma_cloud_skip');
+  location.reload();
+}
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function fmt(d) { if (!d) return '—'; const x = new Date(d); return x.toLocaleDateString('es-AR', { day:'2-digit', month:'short' }); }
 function fmtMoney(n) { return '$' + (Number(n)||0).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
@@ -993,7 +1175,9 @@ function renderGuide() {
 
       <div class="card p-6 bg-green-50 border-green-200">
         <h3 class="font-semibold mb-2">✓ Tus datos están guardados</h3>
-        <p class="text-sm text-gray-700">Todo lo que hacés se guarda automáticamente en tu navegador (localStorage). No necesitás exportar nada para que no se pierda. El botón <b>Backup</b> es solo por si limpiás caché o cambiás de máquina.</p>
+        <p class="text-sm text-gray-700 mb-3">Si configuraste Supabase, todo se sincroniza en tiempo real entre dispositivos y pestañas. Si no, los datos viven solo en este navegador.</p>
+        <p class="text-sm text-gray-700">Estado actual: mirá el indicador en el sidebar (verde = sincronizado, gris = solo local).</p>
+        <button onclick="reconfigureCloud()" class="btn-ghost text-sm mt-3">Reconfigurar sincronización</button>
       </div>
     </div>
   `;
@@ -1560,6 +1744,16 @@ document.addEventListener('keydown', (e) => {
 // ============ BOOT ============
 renderNav();
 render();
+
+// Init cloud sync (or show setup if not configured)
+if (getSupabaseConfig()) {
+  initSupabase();
+} else if (localStorage.getItem('pragma_cloud_skip')) {
+  setSyncStatus('Solo local', '#999');
+} else {
+  document.getElementById('setupOverlay').classList.remove('hidden');
+  setSyncStatus('Sin sincronizar', '#999');
+}
 </script>
 </body>
 </html>
