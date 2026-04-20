@@ -129,7 +129,6 @@ alter publication supabase_realtime add table pragma_state;</code></pre>
 const DEFAULT_STATE = {
   user: { name: "Gonzalo" },
   members: [{ id: 'me', name: 'Gonzalo', color: '#3b82f6' }],
-  currentMemberId: 'me',
   projects: [],
   tasks: [],
   incomes: [],
@@ -138,6 +137,9 @@ const DEFAULT_STATE = {
   history: [],        // { id, taskId, action, from, to, createdAt }
   notifications: [],  // { id, forMemberId, fromMemberId, taskId, text, read, createdAt }
 };
+
+// Identidad local (no se sincroniza — cada dispositivo/persona tiene la suya)
+let currentMemberId = localStorage.getItem('pragma_current_member') || 'me';
 
 let state = load();
 let currentView = 'tasks';
@@ -326,7 +328,7 @@ const PROJECT_STATUS_ORDER = ['LEAD','POSSIBLE','IN_DEVELOPMENT','ACTIVE_RECURRI
 function getProject(id) { return state.projects.find(p => p.id === id); }
 function getTask(id)    { return state.tasks.find(t => t.id === id); }
 function getMember(id)  { return state.members.find(m => m.id === id); }
-function currentMember(){ return getMember(state.currentMemberId) || state.members[0]; }
+function currentMember(){ return getMember(currentMemberId) || state.members[0]; }
 
 function parseMentions(text) {
   const mentions = [];
@@ -347,7 +349,7 @@ function renderMentions(text) {
 }
 
 function unreadCount() {
-  return state.notifications.filter(n => n.forMemberId === state.currentMemberId && !n.read).length;
+  return state.notifications.filter(n => n.forMemberId === currentMemberId && !n.read).length;
 }
 
 function projectProgress(pid) {
@@ -361,11 +363,11 @@ function pushHistory(taskId, action, from, to) {
 }
 
 function notify(forMemberId, taskId, text) {
-  if (!forMemberId || forMemberId === state.currentMemberId) return;
+  if (!forMemberId || forMemberId === currentMemberId) return;
   state.notifications.push({
     id: uid(),
     forMemberId,
-    fromMemberId: state.currentMemberId,
+    fromMemberId: currentMemberId,
     taskId,
     text,
     read: false,
@@ -443,7 +445,7 @@ function viewHeader(title, subtitle, actions = '') {
 // ============ HOME ============
 function renderHome() {
   const today = todayISO();
-  const me = state.currentMemberId;
+  const me = currentMemberId;
   const myTasks = state.tasks.filter(t => t.status !== 'COMPLETED' && (!t.assigneeId || t.assigneeId === me));
   const dueToday = myTasks.filter(t => t.dueDate && t.dueDate <= today);
   const thisWeek = myTasks.filter(t => {
@@ -795,12 +797,35 @@ function openProjectDetail(id) {
             <h2 class="text-2xl font-semibold">${escapeHtml(p.name)}</h2>
             <span class="chip ${s.color}">${s.label}</span>
           </div>
-          ${p.contactName ? `<p class="text-sm text-gray-500 mt-1">${escapeHtml(p.contactName)}${p.contactEmail ? ' · ' + escapeHtml(p.contactEmail) : ''}</p>` : ''}
+          ${p.contactName ? `<p class="text-sm text-gray-500 mt-1">${escapeHtml(p.contactName)}</p>` : ''}
         </div>
         <div class="flex gap-2">
           <button class="btn-ghost text-sm" onclick="openProjectModal('${p.id}')">Editar</button>
           <button class="btn-ghost text-sm text-red-600" onclick="deleteProject('${p.id}')">Eliminar</button>
         </div>
+      </div>
+
+      <div class="flex gap-2 mb-4">
+        ${p.contactPhone ? `
+          <a href="https://wa.me/${p.contactPhone.replace(/[^\d]/g, '')}" target="_blank" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium transition">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
+            ${escapeHtml(p.contactPhone)}
+          </a>
+        ` : `
+          <button onclick="openProjectModal('${p.id}')" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-green-600 hover:text-green-700 text-gray-500 text-sm font-medium transition">
+            + WhatsApp
+          </button>
+        `}
+        ${p.contactEmail ? `
+          <a href="mailto:${p.contactEmail}" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-gray-900 hover:bg-black text-white text-sm font-medium transition">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></svg>
+            Email
+          </a>
+        ` : `
+          <button onclick="openProjectModal('${p.id}')" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-gray-700 hover:text-gray-900 text-gray-500 text-sm font-medium transition">
+            + Email
+          </button>
+        `}
       </div>
 
       ${p.description ? `<p class="text-sm text-gray-700 mb-4">${escapeHtml(p.description)}</p>` : ''}
@@ -862,7 +887,7 @@ function renderTeam() {
       <div class="card divide-y divide-gray-100">
         ${state.members.map(m => {
           const tasks = state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length;
-          const isMe = m.id === state.currentMemberId;
+          const isMe = m.id === currentMemberId;
           return `
             <div class="p-4 flex items-center gap-3 hover:bg-gray-50">
               <span class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
@@ -885,9 +910,9 @@ function renderTeam() {
 }
 
 function setCurrentMember(id) {
-  state.currentMemberId = id;
-  state.user.name = getMember(id).name;
-  save(); renderNav(); render();
+  currentMemberId = id;
+  localStorage.setItem('pragma_current_member', id);
+  renderNav(); render();
 }
 
 function openMemberModal(id) {
@@ -900,7 +925,7 @@ function openMemberModal(id) {
         <div><label class="text-xs text-gray-500">Nombre</label><input name="name" class="input" required autofocus value="${escapeAttr(m.name)}" /></div>
         <div><label class="text-xs text-gray-500">Color</label><input type="color" name="color" class="input h-10" value="${m.color}" /></div>
         <div class="flex justify-between pt-3">
-          <div>${id && id !== state.currentMemberId && state.members.length > 1 ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteMember('${id}')">Eliminar</button>` : ''}</div>
+          <div>${id && id !== currentMemberId && state.members.length > 1 ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteMember('${id}')">Eliminar</button>` : ''}</div>
           <div class="flex gap-2">
             <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
             <button type="submit" class="btn-primary">Guardar</button>
@@ -916,7 +941,7 @@ function saveMember(e) {
   const data = Object.fromEntries(new FormData(e.target).entries());
   if (data.id) {
     Object.assign(getMember(data.id), data);
-    if (data.id === state.currentMemberId) state.user.name = data.name;
+    if (data.id === currentMemberId) state.user.name = data.name;
   } else {
     state.members.push({ ...data, id: uid() });
   }
@@ -936,10 +961,10 @@ function openMemberPicker() {
       <h2 class="text-xl font-semibold mb-4">¿Quién sos?</h2>
       <div class="space-y-2">
         ${state.members.map(m => `
-          <button onclick="closeModal(); setCurrentMember('${m.id}')" class="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 border ${m.id === state.currentMemberId ? 'border-blue-300 bg-blue-50' : 'border-gray-200'}">
+          <button onclick="closeModal(); setCurrentMember('${m.id}')" class="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 border ${m.id === currentMemberId ? 'border-blue-300 bg-blue-50' : 'border-gray-200'}">
             <span class="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
             <span class="font-medium">${escapeHtml(m.name)}</span>
-            ${m.id === state.currentMemberId ? '<span class="ml-auto chip bg-blue-100 text-blue-700">Actual</span>' : ''}
+            ${m.id === currentMemberId ? '<span class="ml-auto chip bg-blue-100 text-blue-700">Actual</span>' : ''}
           </button>
         `).join('')}
       </div>
@@ -1235,7 +1260,7 @@ document.getElementById('modal').addEventListener('click', (e) => {
 
 // ---- Task modal ----
 function openTaskModal(id) {
-  const t = id ? getTask(id) : { id: null, title: '', description: '', status: 'PENDING', priority: 'MEDIUM', projectId: state.projects[0]?.id || '', assigneeId: state.currentMemberId, startDate: todayISO(), dueDate: '', estimatedHrs: '', actualHrs: '' };
+  const t = id ? getTask(id) : { id: null, title: '', description: '', status: 'PENDING', priority: 'MEDIUM', projectId: state.projects[0]?.id || '', assigneeId: currentMemberId, startDate: todayISO(), dueDate: '', estimatedHrs: '', actualHrs: '' };
   const isNew = !id;
   const isDone = t.status === 'COMPLETED';
   openModal(`
@@ -1351,7 +1376,7 @@ function saveTask(e) {
       pushHistory(t.id, 'status', oldStatus, data.status);
       if (data.status === 'COMPLETED') t.completedAt = new Date().toISOString();
     }
-    if (data.assigneeId && data.assigneeId !== oldAssignee && data.assigneeId !== state.currentMemberId) {
+    if (data.assigneeId && data.assigneeId !== oldAssignee && data.assigneeId !== currentMemberId) {
       notify(data.assigneeId, t.id, `Te asignaron: ${t.title}`);
     }
     t.updatedAt = new Date().toISOString();
@@ -1365,7 +1390,7 @@ function saveTask(e) {
     };
     state.tasks.push(t);
     pushHistory(t.id, 'created', null, null);
-    if (data.assigneeId && data.assigneeId !== state.currentMemberId) {
+    if (data.assigneeId && data.assigneeId !== currentMemberId) {
       notify(data.assigneeId, t.id, `Te asignaron: ${t.title}`);
     }
   }
@@ -1483,7 +1508,7 @@ function addComment(e, taskId) {
   state.comments.push({
     id: uid(),
     taskId,
-    authorId: state.currentMemberId,
+    authorId: currentMemberId,
     content,
     mentions,
     createdAt: new Date().toISOString(),
@@ -1496,7 +1521,7 @@ function addComment(e, taskId) {
 
 // ---- Project modal ----
 function openProjectModal(id) {
-  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', contactName: '', contactEmail: '' };
+  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', contactName: '', contactEmail: '', contactPhone: '' };
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar proyecto' : 'Nuevo proyecto'}</h2>
@@ -1522,6 +1547,10 @@ function openProjectModal(id) {
             <input name="contactName" class="input" value="${escapeAttr(p.contactName || '')}" placeholder="Nombre" />
           </div>
           <div>
+            <label class="text-xs text-gray-500">WhatsApp</label>
+            <input name="contactPhone" class="input" value="${escapeAttr(p.contactPhone || '')}" placeholder="+54 9 11 5555-5555" />
+          </div>
+          <div class="col-span-2">
             <label class="text-xs text-gray-500">Email contacto</label>
             <input type="email" name="contactEmail" class="input" value="${escapeAttr(p.contactEmail || '')}" />
           </div>
@@ -1686,7 +1715,7 @@ function closeNotifications() {
 function renderNotifications() {
   const list = document.getElementById('notifList');
   const mine = state.notifications
-    .filter(n => n.forMemberId === state.currentMemberId)
+    .filter(n => n.forMemberId === currentMemberId)
     .sort((a,b) => b.createdAt.localeCompare(a.createdAt));
   if (mine.length === 0) {
     list.innerHTML = `<div class="p-8 text-center text-gray-400 text-sm">Sin notificaciones.</div>`;
@@ -1720,7 +1749,7 @@ function openNotification(id) {
 }
 
 function markAllRead() {
-  state.notifications.forEach(n => { if (n.forMemberId === state.currentMemberId) n.read = true; });
+  state.notifications.forEach(n => { if (n.forMemberId === currentMemberId) n.read = true; });
   save();
   renderNav();
   renderNotifications();
