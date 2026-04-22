@@ -136,7 +136,12 @@ const DEFAULT_STATE = {
   comments: [],       // { id, taskId, authorId, content, mentions: [memberId], createdAt }
   history: [],        // { id, taskId, action, from, to, createdAt }
   notifications: [],  // { id, forMemberId, fromMemberId, taskId, text, read, createdAt }
+  documents: [],      // { id, title, url, category, description, createdAt }
+  resources: [],      // { id, title, url, category, description, createdAt }
 };
+
+const DOC_CATEGORIES = ['Contrato', 'Propuesta', 'Brief', 'Plantilla', 'Legal', 'Guía interna', 'Otro'];
+const RES_CATEGORIES = ['Diseño', 'Desarrollo', 'IA', 'Marketing', 'Productividad', 'Finanzas', 'Otro'];
 
 // Identidad local (no se sincroniza — cada dispositivo/persona tiene la suya)
 let currentMemberId = localStorage.getItem('pragma_current_member') || 'me';
@@ -377,12 +382,14 @@ function notify(forMemberId, taskId, text) {
 
 // ============ NAV ============
 const NAV = [
-  { key: 'tasks',    label: 'Tareas',    icon: '☰' },
-  { key: 'projects', label: 'Proyectos', icon: '◫' },
-  { key: 'finance',  label: 'Finanzas',  icon: '$' },
-  { key: 'reports',  label: 'Reportes',  icon: '◈' },
-  { key: 'team',     label: 'Equipo',    icon: '◐' },
-  { key: 'guide',    label: 'Manual',    icon: '?' },
+  { key: 'tasks',     label: 'Tareas',     icon: '☰' },
+  { key: 'projects',  label: 'Proyectos',  icon: '◫' },
+  { key: 'finance',   label: 'Finanzas',   icon: '$' },
+  { key: 'reports',   label: 'Reportes',   icon: '◈' },
+  { key: 'documents', label: 'Documentos', icon: '▤' },
+  { key: 'resources', label: 'Recursos',   icon: '◇' },
+  { key: 'team',      label: 'Equipo',     icon: '◐' },
+  { key: 'guide',     label: 'Manual',     icon: '?' },
 ];
 
 function renderNav() {
@@ -422,6 +429,8 @@ function render() {
     projects: renderProjects,
     finance: renderFinance,
     reports: renderReports,
+    documents: renderDocuments,
+    resources: renderResources,
     team: renderTeam,
     guide: renderGuide,
   };
@@ -826,6 +835,16 @@ function openProjectDetail(id) {
             + Email
           </button>
         `}
+        ${p.systemUrl ? `
+          <a href="${escapeAttr(p.systemUrl)}" target="_blank" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>
+            Sistema
+          </a>
+        ` : `
+          <button onclick="openProjectModal('${p.id}')" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-blue-600 hover:text-blue-700 text-gray-500 text-sm font-medium transition">
+            + Sistema
+          </button>
+        `}
       </div>
 
       ${p.description ? `<p class="text-sm text-gray-700 mb-4">${escapeHtml(p.description)}</p>` : ''}
@@ -875,6 +894,179 @@ function openProjectDetail(id) {
       `}
     </div>
   `);
+}
+
+// ============ DOCUMENTS & RESOURCES ============
+let docsFilter = '';
+let resourcesFilter = '';
+
+function faviconFor(url) {
+  try {
+    const u = new URL(url);
+    return `https://www.google.com/s2/favicons?domain=${u.hostname}&sz=32`;
+  } catch { return null; }
+}
+
+function domainOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
+
+function renderLinkPanel(title, subtitle, items, filter, categories, setFilter, onAdd, onEdit) {
+  const filtered = filter ? items.filter(i => i.category === filter) : items;
+  const sorted = [...filtered].sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+
+  return `
+    ${viewHeader(title, subtitle, `<button class="btn-primary" onclick="${onAdd}()">+ Nuevo</button>`)}
+
+    <div class="px-10 pb-4 flex gap-2 flex-wrap">
+      <button onclick="${setFilter}(''); render()" class="chip ${filter===''?'bg-black text-white':'bg-gray-100 text-gray-700'} py-1.5 px-3 cursor-pointer">Todos (${items.length})</button>
+      ${categories.map(c => {
+        const n = items.filter(i => i.category === c).length;
+        if (n === 0) return '';
+        return `<button onclick="${setFilter}('${c}'); render()" class="chip ${filter===c?'bg-black text-white':'bg-gray-100 text-gray-700'} py-1.5 px-3 cursor-pointer">${c} (${n})</button>`;
+      }).join('')}
+    </div>
+
+    <div class="px-10 pb-10">
+      ${sorted.length === 0 ? `
+        <div class="card p-10 text-center text-gray-400">
+          ${items.length === 0 ? 'Sin items todavía. Agregá el primero.' : 'Nada en esta categoría.'}
+        </div>
+      ` : `
+        <div class="grid grid-cols-3 gap-4">
+          ${sorted.map(i => {
+            const favicon = faviconFor(i.url);
+            const domain = domainOf(i.url);
+            return `
+              <div class="card p-5 hover:shadow-md transition-shadow group">
+                <div class="flex items-start gap-3 mb-3">
+                  ${favicon ? `<img src="${favicon}" class="w-8 h-8 rounded" onerror="this.style.display='none'" />` : '<div class="w-8 h-8 rounded bg-gray-100"></div>'}
+                  <div class="flex-1 min-w-0">
+                    <div class="font-semibold text-sm truncate">${escapeHtml(i.title)}</div>
+                    <div class="text-xs text-gray-500 truncate">${escapeHtml(domain || i.url)}</div>
+                  </div>
+                  <button class="opacity-0 group-hover:opacity-100 text-xs text-gray-500 hover:text-gray-900" onclick="${onEdit}('${i.id}')">⋯</button>
+                </div>
+                ${i.description ? `<p class="text-xs text-gray-600 mb-3 line-clamp-2">${escapeHtml(i.description)}</p>` : ''}
+                <div class="flex items-center justify-between">
+                  <span class="chip bg-gray-100 text-gray-700">${escapeHtml(i.category || 'Otro')}</span>
+                  <a href="${escapeAttr(i.url)}" target="_blank" class="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                    Abrir
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg>
+                  </a>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function renderDocuments() {
+  return renderLinkPanel(
+    'Documentos',
+    'Contratos, propuestas, plantillas y guías internas',
+    state.documents,
+    docsFilter,
+    DOC_CATEGORIES,
+    'setDocsFilter',
+    'openDocumentModal',
+    'openDocumentModal'
+  );
+}
+function setDocsFilter(f) { docsFilter = f; }
+
+function renderResources() {
+  return renderLinkPanel(
+    'Recursos',
+    'Apps, herramientas y links útiles',
+    state.resources,
+    resourcesFilter,
+    RES_CATEGORIES,
+    'setResourcesFilter',
+    'openResourceModal',
+    'openResourceModal'
+  );
+}
+function setResourcesFilter(f) { resourcesFilter = f; }
+
+// ---- Generic link modal ----
+function openLinkModal(title, item, categories, onSave, onDelete, id) {
+  openModal(`
+    <div class="p-6">
+      <h2 class="text-xl font-semibold mb-4">${id ? 'Editar' : 'Nuevo'} ${title.toLowerCase()}</h2>
+      <form onsubmit="${onSave}(event)" class="space-y-3">
+        <input type="hidden" name="id" value="${item.id || ''}" />
+        <div>
+          <label class="text-xs text-gray-500">Título</label>
+          <input name="title" class="input" required autofocus value="${escapeAttr(item.title)}" placeholder="Ej: Contrato base clientes" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Link</label>
+          <input type="url" name="url" class="input" required value="${escapeAttr(item.url)}" placeholder="https://..." />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Categoría</label>
+          <select name="category">
+            ${categories.map(c => `<option value="${c}" ${item.category===c?'selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Descripción (opcional)</label>
+          <textarea name="description" class="input" rows="2">${escapeHtml(item.description || '')}</textarea>
+        </div>
+        <div class="flex justify-between pt-3">
+          <div>${id ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="${onDelete}('${id}')">Eliminar</button>` : ''}</div>
+          <div class="flex gap-2">
+            <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function openDocumentModal(id) {
+  const doc = id ? state.documents.find(d => d.id === id) : { id: null, title: '', url: '', category: DOC_CATEGORIES[0], description: '' };
+  openLinkModal('Documento', doc, DOC_CATEGORIES, 'saveDocument', 'deleteDocument', id);
+}
+function saveDocument(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  if (data.id) {
+    Object.assign(state.documents.find(d => d.id === data.id), data);
+  } else {
+    state.documents.push({ ...data, id: uid(), createdAt: new Date().toISOString() });
+  }
+  save(); closeModal(); render();
+}
+function deleteDocument(id) {
+  if (!confirm('¿Eliminar documento?')) return;
+  state.documents = state.documents.filter(d => d.id !== id);
+  save(); closeModal(); render();
+}
+
+function openResourceModal(id) {
+  const res = id ? state.resources.find(r => r.id === id) : { id: null, title: '', url: '', category: RES_CATEGORIES[0], description: '' };
+  openLinkModal('Recurso', res, RES_CATEGORIES, 'saveResource', 'deleteResource', id);
+}
+function saveResource(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  if (data.id) {
+    Object.assign(state.resources.find(r => r.id === data.id), data);
+  } else {
+    state.resources.push({ ...data, id: uid(), createdAt: new Date().toISOString() });
+  }
+  save(); closeModal(); render();
+}
+function deleteResource(id) {
+  if (!confirm('¿Eliminar recurso?')) return;
+  state.resources = state.resources.filter(r => r.id !== id);
+  save(); closeModal(); render();
 }
 
 // ============ TEAM ============
@@ -1521,7 +1713,7 @@ function addComment(e, taskId) {
 
 // ---- Project modal ----
 function openProjectModal(id) {
-  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', contactName: '', contactEmail: '', contactPhone: '' };
+  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', contactName: '', contactEmail: '', contactPhone: '', systemUrl: '' };
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar proyecto' : 'Nuevo proyecto'}</h2>
@@ -1553,6 +1745,10 @@ function openProjectModal(id) {
           <div class="col-span-2">
             <label class="text-xs text-gray-500">Email contacto</label>
             <input type="email" name="contactEmail" class="input" value="${escapeAttr(p.contactEmail || '')}" />
+          </div>
+          <div class="col-span-2">
+            <label class="text-xs text-gray-500">Link al sistema del cliente</label>
+            <input type="url" name="systemUrl" class="input" value="${escapeAttr(p.systemUrl || '')}" placeholder="https://..." />
           </div>
           <div>
             <label class="text-xs text-gray-500">Inicio</label>
