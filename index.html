@@ -15,18 +15,49 @@
   .btn-primary:hover { opacity: .85; }
   .btn-ghost { color: #555; padding: 8px 12px; border-radius: 10px; }
   .btn-ghost:hover { background: #f1f1f1; }
-  .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
   .nav-item { display:flex; align-items:center; gap: 10px; padding: 8px 12px; border-radius: 10px; color:#444; font-size: 14px; cursor: pointer; }
   .nav-item:hover { background: #f1f1f1; }
   .nav-item.active { background: #111; color: #fff; }
   .input, select, textarea { background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 8px 12px; font-size: 14px; outline: none; transition: border .15s; width: 100%; }
   .input:focus, select:focus, textarea:focus { border-color: #111; }
-  .kanban-col { background: #f3f3f3; border-radius: 14px; padding: 12px; min-width: 260px; }
+  .kanban-col { background: #f3f3f3; border-radius: 14px; padding: 12px; min-width: 240px; }
+  @media (max-width: 768px) { .kanban-col { min-width: 220px; } }
   .task-card { background:#fff; border-radius: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid #eee; cursor: pointer; transition: transform .1s, box-shadow .1s; }
   .task-card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.05); }
   .modal-bg { background: rgba(0,0,0,.4); backdrop-filter: blur(4px); }
   .fade-in { animation: fadeIn .15s ease-out; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  /* Mobile sidebar */
+  .menu-btn { display: none; }
+  @media (max-width: 768px) {
+    aside#sidebar {
+      position: fixed; top: 0; left: 0; bottom: 0; z-index: 60;
+      transform: translateX(-100%); transition: transform .25s ease-out;
+      box-shadow: 2px 0 24px rgba(0,0,0,.1);
+    }
+    aside#sidebar.open { transform: translateX(0); }
+    .menu-btn { display: flex; }
+    .sidebar-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 55;
+      opacity: 0; pointer-events: none; transition: opacity .2s;
+    }
+    .sidebar-overlay.show { opacity: 1; pointer-events: auto; }
+    .px-10 { padding-left: 1rem !important; padding-right: 1rem !important; }
+    .pt-10 { padding-top: 1.5rem !important; }
+    h1 { font-size: 1.5rem !important; }
+  }
+
+  /* Custom bar chart */
+  .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 180px; }
+  .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+  .bar-pair { display: flex; gap: 2px; align-items: flex-end; height: 140px; width: 100%; justify-content: center; }
+  .bar { width: 50%; max-width: 16px; min-height: 2px; border-radius: 3px 3px 0 0; transition: opacity .15s; cursor: pointer; }
+  .bar:hover { opacity: .75; }
+  .bar.income { background: #22c55e; }
+  .bar.expense { background: #ef4444; }
+  .bar-label { font-size: 10px; color: #6b7280; text-align: center; }
 </style>
 </head>
 <body>
@@ -78,8 +109,14 @@ alter publication supabase_realtime add table pragma_state;</code></pre>
 </div>
 
 <div id="app" class="flex h-screen overflow-hidden">
+  <!-- Mobile menu button -->
+  <button class="menu-btn fixed top-3 left-3 z-50 p-2 rounded-lg bg-white shadow-md border border-gray-200" onclick="toggleSidebar()">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+  </button>
+  <div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+
   <!-- Sidebar -->
-  <aside class="w-60 border-r border-gray-200 bg-white flex flex-col">
+  <aside id="sidebar" class="w-60 border-r border-gray-200 bg-white flex flex-col">
     <div class="px-5 py-5 flex items-center justify-between">
       <div>
         <div class="text-xl font-semibold tracking-tight">Pragma</div>
@@ -419,6 +456,16 @@ function go(view) {
   currentTaskId = null;
   renderNav();
   render();
+  closeSidebar();
+}
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('show');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('show');
 }
 
 // ============ RENDER DISPATCH ============
@@ -441,12 +488,12 @@ function render() {
 // ============ HEADER TEMPLATE ============
 function viewHeader(title, subtitle, actions = '') {
   return `
-    <div class="px-10 pt-10 pb-6 flex items-end justify-between">
-      <div>
-        <h1 class="text-3xl font-semibold tracking-tight">${title}</h1>
+    <div class="px-4 md:px-10 pt-8 md:pt-10 pb-4 md:pb-6 flex items-end justify-between gap-3 flex-wrap">
+      <div class="min-w-0">
+        <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">${title}</h1>
         ${subtitle ? `<p class="text-gray-500 mt-1 text-sm">${subtitle}</p>` : ''}
       </div>
-      <div class="flex gap-2">${actions}</div>
+      <div class="flex gap-2 flex-wrap items-center">${actions}</div>
     </div>
   `;
 }
@@ -469,7 +516,7 @@ function renderHome() {
     ${viewHeader(`${greeting}, ${currentMember()?.name || ''}`, 'Qué se hace hoy',
       `<button class="btn-primary" onclick="openTaskModal()">+ Nueva tarea</button>`)}
 
-    <div class="px-10 pb-10 space-y-6">
+    <div class="px-4 md:px-10 pb-10 space-y-6">
 
       <section>
         <h2 class="text-xs uppercase tracking-wider text-gray-500 mb-3">Vence hoy o antes (${dueToday.length})</h2>
@@ -550,14 +597,14 @@ function renderTasks() {
        <button class="btn-primary" onclick="openTaskModal()">+ Nueva</button>`
     )}
 
-    <div class="px-10 pb-4 flex gap-2">
+    <div class="px-4 md:px-10 pb-4 flex gap-2">
       <select class="input max-w-xs" onchange="tasksFilter.projectId=this.value; render()">
         <option value="">Todos los proyectos</option>
         ${state.projects.map(p => `<option value="${p.id}" ${tasksFilter.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
       </select>
     </div>
 
-    <div class="px-10 pb-10">
+    <div class="px-4 md:px-10 pb-10">
       ${tasksViewMode === 'kanban' ? renderKanban() : tasksViewMode === 'gantt' ? renderGantt() : renderTaskList()}
     </div>
   `;
@@ -733,7 +780,7 @@ function renderProjects() {
     ${viewHeader('Proyectos', `${state.projects.length} en total`,
       `<button class="btn-primary" onclick="openProjectModal()">+ Nuevo</button>`)}
 
-    <div class="px-10 pb-10">
+    <div class="px-4 md:px-10 pb-10">
       ${state.projects.length === 0 ? `<div class="card p-10 text-center text-gray-400">Sin proyectos. Creá el primero.</div>` : `
       <div class="flex gap-4 overflow-x-auto scroll-hide pb-4">
         ${PROJECT_STATUS_ORDER.map(k => {
@@ -799,49 +846,51 @@ function openProjectDetail(id) {
 
   openModal(`
     <div class="p-6">
-      <div class="flex items-start justify-between mb-4">
-        <div>
-          <div class="flex items-center gap-2">
-            <span class="w-3 h-3 rounded-full" style="background:${p.color}"></span>
-            <h2 class="text-2xl font-semibold">${escapeHtml(p.name)}</h2>
-            <span class="chip ${s.color}">${s.label}</span>
+      <div class="flex items-start justify-between gap-3 mb-3 flex-wrap">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="w-3 h-3 rounded-full flex-shrink-0" style="background:${p.color}"></span>
+            <h2 class="text-xl md:text-2xl font-semibold leading-tight">${escapeHtml(p.name)}</h2>
           </div>
-          ${p.contactName ? `<p class="text-sm text-gray-500 mt-1">${escapeHtml(p.contactName)}</p>` : ''}
+          <div class="flex items-center gap-2 mt-2 flex-wrap">
+            <span class="chip ${s.color}">${s.label}</span>
+            ${p.contactName ? `<span class="text-sm text-gray-500">· ${escapeHtml(p.contactName)}</span>` : ''}
+          </div>
         </div>
-        <div class="flex gap-2">
+        <div class="flex gap-1">
           <button class="btn-ghost text-sm" onclick="openProjectModal('${p.id}')">Editar</button>
           <button class="btn-ghost text-sm text-red-600" onclick="deleteProject('${p.id}')">Eliminar</button>
         </div>
       </div>
 
-      <div class="flex gap-2 mb-4">
+      <div class="grid grid-cols-3 gap-2 mb-4">
         ${p.contactPhone ? `
-          <a href="https://wa.me/${p.contactPhone.replace(/[^\d]/g, '')}" target="_blank" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium transition">
+          <a href="https://wa.me/${p.contactPhone.replace(/[^\d]/g, '')}" target="_blank" class="flex items-center justify-center gap-2 py-2.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium transition truncate">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
             ${escapeHtml(p.contactPhone)}
           </a>
         ` : `
-          <button onclick="openProjectModal('${p.id}')" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-green-600 hover:text-green-700 text-gray-500 text-sm font-medium transition">
+          <button onclick="openProjectModal('${p.id}')" class="flex items-center justify-center gap-1 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-green-600 hover:text-green-700 text-gray-500 text-sm font-medium transition">
             + WhatsApp
           </button>
         `}
         ${p.contactEmail ? `
-          <a href="mailto:${p.contactEmail}" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-gray-900 hover:bg-black text-white text-sm font-medium transition">
+          <a href="mailto:${p.contactEmail}" class="flex items-center justify-center gap-2 py-2.5 rounded-lg bg-gray-900 hover:bg-black text-white text-sm font-medium transition truncate">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></svg>
             Email
           </a>
         ` : `
-          <button onclick="openProjectModal('${p.id}')" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-gray-700 hover:text-gray-900 text-gray-500 text-sm font-medium transition">
+          <button onclick="openProjectModal('${p.id}')" class="flex items-center justify-center gap-1 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-gray-700 hover:text-gray-900 text-gray-500 text-sm font-medium transition">
             + Email
           </button>
         `}
         ${p.systemUrl ? `
-          <a href="${escapeAttr(p.systemUrl)}" target="_blank" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition">
+          <a href="${escapeAttr(p.systemUrl)}" target="_blank" class="flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition truncate">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>
             Sistema
           </a>
         ` : `
-          <button onclick="openProjectModal('${p.id}')" class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-blue-600 hover:text-blue-700 text-gray-500 text-sm font-medium transition">
+          <button onclick="openProjectModal('${p.id}')" class="flex items-center justify-center gap-1 py-2.5 rounded-lg border-2 border-dashed border-gray-300 hover:border-blue-600 hover:text-blue-700 text-gray-500 text-sm font-medium transition">
             + Sistema
           </button>
         `}
@@ -881,7 +930,14 @@ function openProjectDetail(id) {
           }).join('')}
         </div>
       ` : `
-        <h3 class="text-xs uppercase tracking-wider text-gray-500 mb-2">Tareas (${tasks.length})</h3>
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-xs uppercase tracking-wider text-gray-500">Tareas (${tasks.length})</h3>
+          ${tasks.filter(t => t.status !== 'COMPLETED').length > 0 ? `
+            <button onclick="openPromptModal('${p.id}')" class="text-xs flex items-center gap-1 px-2 py-1 rounded-md bg-purple-50 text-purple-700 hover:bg-purple-100 font-medium">
+              ✦ Prompt para Claude
+            </button>
+          ` : ''}
+        </div>
         <div class="space-y-1 max-h-80 overflow-y-auto">
           ${tasks.length === 0 ? '<div class="text-gray-400 text-sm">Sin tareas.</div>' : tasks.map(t => `
             <div class="flex items-center gap-2 py-2 border-b border-gray-100 cursor-pointer hover:bg-gray-50 px-2 rounded" onclick="closeModal(); openTaskDetail('${t.id}')">
@@ -894,6 +950,133 @@ function openProjectDetail(id) {
       `}
     </div>
   `);
+}
+
+// ============ PROMPT GENERATOR ============
+let promptStyle = 'organize'; // 'organize' | 'execute' | 'review'
+
+function generateProjectPrompt(projectId, style) {
+  const p = getProject(projectId);
+  const allTasks = state.tasks.filter(t => t.projectId === projectId && t.status !== 'COMPLETED');
+  const blocked = allTasks.filter(t => t.status === 'BLOCKED');
+  const inReview = allTasks.filter(t => t.status === 'IN_REVIEW');
+  const inProgress = allTasks.filter(t => t.status === 'IN_PROGRESS');
+  const pending = allTasks.filter(t => t.status === 'PENDING');
+
+  const order = ['URGENT', 'HIGH', 'MEDIUM', 'LOW'];
+  const grouped = order.map(prio => ({
+    prio,
+    label: PRIORITY[prio].label,
+    tasks: allTasks.filter(t => t.priority === prio && t.status !== 'BLOCKED'),
+  })).filter(g => g.tasks.length > 0);
+
+  const taskBullet = (t) => {
+    let line = `- **${t.title}**`;
+    const meta = [];
+    if (t.dueDate) meta.push(`vence ${fmt(t.dueDate)}`);
+    if (t.estimatedHrs) meta.push(`~${t.estimatedHrs}h`);
+    if (t.status === 'IN_PROGRESS') meta.push('en progreso');
+    if (t.status === 'IN_REVIEW') meta.push('en revisión');
+    if (meta.length) line += ` _(${meta.join(' · ')})_`;
+    if (t.description) line += `\n  ${t.description.replace(/\n/g, '\n  ')}`;
+    return line;
+  };
+
+  let out = `# ${p.name}\n\n`;
+  if (p.description) out += `**Contexto:** ${p.description}\n\n`;
+  if (p.systemUrl) out += `**Sistema:** ${p.systemUrl}\n\n`;
+
+  out += `## Estado actual\n`;
+  out += `- ${pending.length} pendientes · ${inProgress.length} en progreso · ${inReview.length} en revisión · ${blocked.length} bloqueadas\n\n`;
+
+  if (grouped.length > 0) {
+    out += `## Tareas por prioridad\n\n`;
+    grouped.forEach(g => {
+      out += `### ${g.label} (${g.tasks.length})\n`;
+      g.tasks.forEach(t => { out += taskBullet(t) + '\n'; });
+      out += '\n';
+    });
+  }
+
+  if (blocked.length > 0) {
+    out += `## ⚠ Bloqueadas\n\n`;
+    blocked.forEach(t => {
+      out += `- **${t.title}** — _Motivo:_ ${t.blockedReason || 'sin especificar'}\n`;
+    });
+    out += '\n';
+  }
+
+  out += `---\n\n`;
+
+  if (style === 'organize') {
+    out += `## Lo que necesito\n\n`;
+    out += `Ayudame a organizar este trabajo:\n\n`;
+    out += `1. Revisá el listado y sugerí un orden de ejecución óptimo\n`;
+    out += `2. Identificá dependencias entre tareas (qué debe ir antes de qué)\n`;
+    out += `3. Detectá tareas que se puedan agrupar o resolver de una sola vez\n`;
+    out += `4. Avisame si ves algo ambiguo o que falte\n`;
+    out += `5. Estimá si el conjunto es realista para el tiempo disponible\n`;
+  } else if (style === 'execute') {
+    out += `## Lo que necesito\n\n`;
+    out += `Ayudame a resolver estas tareas. Para cada una:\n\n`;
+    out += `1. Sugerí un enfoque concreto paso a paso\n`;
+    out += `2. Identificá riesgos o cosas a tener en cuenta\n`;
+    out += `3. Si necesitás más contexto, preguntame\n`;
+    out += `4. Si una tarea no está clara, marcala como tal\n`;
+    out += `5. Empezá por la de mayor prioridad y avanzá hacia abajo\n`;
+  } else if (style === 'review') {
+    out += `## Lo que necesito\n\n`;
+    out += `Hacé un análisis crítico de esta carga de trabajo:\n\n`;
+    out += `1. ¿Hay tareas mal definidas o demasiado vagas?\n`;
+    out += `2. ¿Falta algo evidente para que el proyecto avance?\n`;
+    out += `3. ¿Qué bloqueo es más urgente destrabar y cómo?\n`;
+    out += `4. ¿Hay riesgo de scope creep o cosas fuera de objetivo?\n`;
+    out += `5. Sugerí qué cortar, qué postergar y qué priorizar.\n`;
+  }
+
+  return out;
+}
+
+function openPromptModal(projectId) {
+  const text = generateProjectPrompt(projectId, promptStyle);
+  openModal(`
+    <div class="p-6 max-w-2xl">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-xl font-semibold">Prompt para Claude</h2>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900">✕</button>
+      </div>
+
+      <div class="flex gap-1 bg-gray-100 rounded-lg p-1 mb-4 w-fit">
+        <button onclick="promptStyle='organize'; openPromptModal('${projectId}')" class="px-3 py-1.5 rounded-md text-xs ${promptStyle==='organize'?'bg-white shadow-sm font-medium':''}">Organizar</button>
+        <button onclick="promptStyle='execute'; openPromptModal('${projectId}')" class="px-3 py-1.5 rounded-md text-xs ${promptStyle==='execute'?'bg-white shadow-sm font-medium':''}">Resolver</button>
+        <button onclick="promptStyle='review'; openPromptModal('${projectId}')" class="px-3 py-1.5 rounded-md text-xs ${promptStyle==='review'?'bg-white shadow-sm font-medium':''}">Revisar</button>
+      </div>
+
+      <p class="text-xs text-gray-500 mb-2">Editalo si querés antes de copiarlo.</p>
+      <textarea id="promptText" class="input font-mono text-xs leading-relaxed" rows="18" style="white-space:pre">${escapeHtml(text)}</textarea>
+
+      <div class="flex justify-end gap-2 mt-4">
+        <a href="https://claude.ai/new" target="_blank" class="btn-ghost text-sm">Abrir Claude.ai ↗</a>
+        <button onclick="copyPromptText()" id="copyPromptBtn" class="btn-primary">📋 Copiar</button>
+      </div>
+    </div>
+  `);
+}
+
+function copyPromptText() {
+  const text = document.getElementById('promptText').value;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copyPromptBtn');
+    const original = btn.textContent;
+    btn.textContent = '✓ Copiado';
+    btn.classList.add('bg-green-600');
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove('bg-green-600');
+    }, 1500);
+  }).catch(() => {
+    alert('No se pudo copiar. Seleccioná el texto y copialo manualmente.');
+  });
 }
 
 // ============ DOCUMENTS & RESOURCES ============
@@ -918,7 +1101,7 @@ function renderLinkPanel(title, subtitle, items, filter, categories, setFilter, 
   return `
     ${viewHeader(title, subtitle, `<button class="btn-primary" onclick="${onAdd}()">+ Nuevo</button>`)}
 
-    <div class="px-10 pb-4 flex gap-2 flex-wrap">
+    <div class="px-4 md:px-10 pb-4 flex gap-2 flex-wrap">
       <button onclick="${setFilter}(''); render()" class="chip ${filter===''?'bg-black text-white':'bg-gray-100 text-gray-700'} py-1.5 px-3 cursor-pointer">Todos (${items.length})</button>
       ${categories.map(c => {
         const n = items.filter(i => i.category === c).length;
@@ -927,13 +1110,13 @@ function renderLinkPanel(title, subtitle, items, filter, categories, setFilter, 
       }).join('')}
     </div>
 
-    <div class="px-10 pb-10">
+    <div class="px-4 md:px-10 pb-10">
       ${sorted.length === 0 ? `
         <div class="card p-10 text-center text-gray-400">
           ${items.length === 0 ? 'Sin items todavía. Agregá el primero.' : 'Nada en esta categoría.'}
         </div>
       ` : `
-        <div class="grid grid-cols-3 gap-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           ${sorted.map(i => {
             const favicon = faviconFor(i.url);
             const domain = domainOf(i.url);
@@ -1075,7 +1258,7 @@ function renderTeam() {
     ${viewHeader('Equipo', `${state.members.length} miembros`,
       `<button class="btn-primary" onclick="openMemberModal()">+ Miembro</button>`)}
 
-    <div class="px-10 pb-10 max-w-2xl">
+    <div class="px-4 md:px-10 pb-10 max-w-2xl">
       <div class="card divide-y divide-gray-100">
         ${state.members.map(m => {
           const tasks = state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length;
@@ -1166,17 +1349,52 @@ function openMemberPicker() {
 }
 
 // ============ FINANCE ============
-let financeMonth = new Date().toISOString().slice(0,7); // YYYY-MM
+let financeMode  = 'month';                                 // 'month' | 'year' | 'range'
+let financeMonth = new Date().toISOString().slice(0,7);     // YYYY-MM
+let financeYear  = String(new Date().getFullYear());
+let financeFrom  = new Date(new Date().getFullYear(), new Date().getMonth() - 2, 1).toISOString().slice(0,10);
+let financeTo    = new Date().toISOString().slice(0,10);
+
+function lastDayOfMonth(yyyymm) {
+  const [y, m] = yyyymm.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  return `${yyyymm}-${String(last).padStart(2,'0')}`;
+}
+
+function monthsBetween(fromDate, toDate) {
+  const out = [];
+  let [fy, fm] = fromDate.split('-').slice(0,2).map(Number);
+  const [ty, tm] = toDate.split('-').slice(0,2).map(Number);
+  while (fy < ty || (fy === ty && fm <= tm)) {
+    out.push(`${fy}-${String(fm).padStart(2,'0')}`);
+    fm++; if (fm > 12) { fm = 1; fy++; }
+  }
+  return out;
+}
+
+const MONTH_NAMES_SHORT = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+const MONTH_NAMES_FULL  = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+function getFinanceRange() {
+  if (financeMode === 'month') {
+    const [y, m] = financeMonth.split('-').map(Number);
+    return { from: financeMonth + '-01', to: lastDayOfMonth(financeMonth), label: `${MONTH_NAMES_FULL[m-1]} ${y}` };
+  }
+  if (financeMode === 'year') {
+    return { from: `${financeYear}-01-01`, to: `${financeYear}-12-31`, label: `Año ${financeYear}` };
+  }
+  return { from: financeFrom, to: financeTo, label: `${fmt(financeFrom)} → ${fmt(financeTo)}` };
+}
 
 function getAutoIncomes(month) {
-  // Genera ingresos virtuales a partir de proyectos ACTIVE_RECURRING con mensualidad
+  // Ingresos virtuales a partir de proyectos ACTIVE_RECURRING con mensualidad
   const out = [];
   state.projects.forEach(p => {
     if (p.status !== 'ACTIVE_RECURRING' || !p.monthlyFee) return;
     const startMonth = (p.startDate || '').slice(0, 7);
-    if (startMonth && startMonth > month) return; // aún no arrancaba
+    if (startMonth && startMonth > month) return;
     const endMonth = (p.endDate || '').slice(0, 7);
-    if (endMonth && endMonth < month) return; // ya terminó
+    if (endMonth && endMonth < month) return;
     out.push({
       id: `auto-${p.id}-${month}`,
       amount: Number(p.monthlyFee),
@@ -1189,6 +1407,16 @@ function getAutoIncomes(month) {
   return out;
 }
 
+function getAutoIncomesInRange(from, to) {
+  const fromM = from.slice(0,7);
+  const toM = to.slice(0,7);
+  return monthsBetween(fromM + '-01', toM + '-01').flatMap(m => getAutoIncomes(m));
+}
+
+function inRange(date, from, to) {
+  return date >= from && date <= to;
+}
+
 function monthBalance(month) {
   const m = month || financeMonth;
   const inc = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
@@ -1197,46 +1425,141 @@ function monthBalance(month) {
   return inc + autoInc - exp;
 }
 
+function setFinanceMode(m) { financeMode = m; render(); }
+
 function renderFinance() {
-  const realInc = state.incomes.filter(i => i.date && i.date.startsWith(financeMonth));
-  const autoInc = getAutoIncomes(financeMonth);
-  const inc = [...autoInc, ...realInc];
-  const exp = state.expenses.filter(e => e.date && e.date.startsWith(financeMonth));
+  const { from, to, label } = getFinanceRange();
+  const realInc = state.incomes.filter(i => i.date && inRange(i.date, from, to));
+  const autoInc = getAutoIncomesInRange(from, to);
+  const inc = [...autoInc, ...realInc].sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  const exp = state.expenses.filter(e => e.date && inRange(e.date, from, to)).sort((a,b) => (b.date||'').localeCompare(a.date||''));
   const incTotal = inc.reduce((a,b) => a + Number(b.amount||0), 0);
   const expTotal = exp.reduce((a,b) => a + Number(b.amount||0), 0);
   const balance = incTotal - expTotal;
   const margin = incTotal > 0 ? Math.round(balance / incTotal * 100) : 0;
   const autoTotal = autoInc.reduce((a,b) => a + Number(b.amount||0), 0);
 
-  return `
-    ${viewHeader('Finanzas', 'Ingresos, gastos y rentabilidad',
-      `<input type="month" class="input max-w-xs" value="${financeMonth}" onchange="financeMonth=this.value; render()" />
-       <button class="btn-ghost" onclick="openIncomeModal()">+ Ingreso</button>
-       <button class="btn-primary" onclick="openExpenseModal()">+ Gasto</button>`)}
+  // Breakdown per month if range covers more than one month
+  const monthsInRange = monthsBetween(from, to);
+  const showBreakdown = monthsInRange.length > 1;
+  const monthlyData = showBreakdown ? monthsInRange.map(m => {
+    const realI = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
+    const autoI = getAutoIncomes(m).reduce((a,b) => a + Number(b.amount||0), 0);
+    const e = state.expenses.filter(x => x.date && x.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
+    return { month: m, income: realI + autoI, expense: e, balance: realI + autoI - e };
+  }) : [];
+  const maxAbs = Math.max(1, ...monthlyData.map(d => Math.max(d.income, d.expense)));
 
-    <div class="px-10 pb-10 space-y-6">
-      <div class="grid grid-cols-4 gap-4">
-        <div class="card p-5"><div class="text-xs text-gray-500">Ingresos</div><div class="text-2xl font-semibold text-green-700">${fmtMoney(incTotal)}</div></div>
-        <div class="card p-5"><div class="text-xs text-gray-500">Gastos</div><div class="text-2xl font-semibold text-red-600">${fmtMoney(expTotal)}</div></div>
-        <div class="card p-5"><div class="text-xs text-gray-500">Balance</div><div class="text-2xl font-semibold ${balance>=0?'text-green-700':'text-red-600'}">${fmtMoney(balance)}</div></div>
-        <div class="card p-5"><div class="text-xs text-gray-500">Margen</div><div class="text-2xl font-semibold">${margin}%</div></div>
+  // Year selector options
+  const allYears = (() => {
+    const yrs = new Set([new Date().getFullYear()]);
+    state.incomes.forEach(i => i.date && yrs.add(Number(i.date.slice(0,4))));
+    state.expenses.forEach(e => e.date && yrs.add(Number(e.date.slice(0,4))));
+    state.projects.forEach(p => p.startDate && yrs.add(Number(p.startDate.slice(0,4))));
+    return [...yrs].sort((a,b) => b-a);
+  })();
+
+  return `
+    <div class="px-4 md:px-10 pt-8 md:pt-10 pb-4">
+      <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+        <div>
+          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Finanzas</h1>
+          <p class="text-gray-500 mt-1 text-sm">${label}</p>
+        </div>
+        <div class="flex gap-2">
+          <button class="btn-ghost" onclick="openIncomeModal()">+ Ingreso</button>
+          <button class="btn-primary" onclick="openExpenseModal()">+ Gasto</button>
+        </div>
       </div>
 
-      <div class="grid grid-cols-2 gap-4">
-        <div class="card p-5">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="font-semibold">Ingresos del mes</h3>
-            <span class="text-xs text-gray-500">${inc.length}${autoInc.length ? ` · ${fmtMoney(autoTotal)} recurrente` : ''}</span>
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="flex gap-1 bg-gray-100 rounded-lg p-1">
+          <button class="px-3 py-1 rounded-md text-sm ${financeMode==='month'?'bg-white shadow-sm font-medium':''}" onclick="setFinanceMode('month')">Mes</button>
+          <button class="px-3 py-1 rounded-md text-sm ${financeMode==='year'?'bg-white shadow-sm font-medium':''}" onclick="setFinanceMode('year')">Año</button>
+          <button class="px-3 py-1 rounded-md text-sm ${financeMode==='range'?'bg-white shadow-sm font-medium':''}" onclick="setFinanceMode('range')">Rango</button>
+        </div>
+
+        ${financeMode === 'month' ? `
+          <input type="month" class="input max-w-[170px]" value="${financeMonth}" onchange="financeMonth=this.value; render()" />
+        ` : ''}
+        ${financeMode === 'year' ? `
+          <select class="input max-w-[120px]" onchange="financeYear=this.value; render()">
+            ${allYears.map(y => `<option value="${y}" ${String(y)===financeYear?'selected':''}>${y}</option>`).join('')}
+          </select>
+        ` : ''}
+        ${financeMode === 'range' ? `
+          <input type="date" class="input max-w-[150px]" value="${financeFrom}" onchange="financeFrom=this.value; render()" />
+          <span class="text-gray-400 text-sm">→</span>
+          <input type="date" class="input max-w-[150px]" value="${financeTo}" onchange="financeTo=this.value; render()" />
+        ` : ''}
+      </div>
+    </div>
+
+    <div class="px-4 md:px-10 pb-10 space-y-4 md:space-y-6">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+        <div class="card p-4 md:p-5"><div class="text-xs text-gray-500">Ingresos</div><div class="text-xl md:text-2xl font-semibold text-green-700">${fmtMoney(incTotal)}</div>${autoTotal ? `<div class="text-[11px] text-gray-500 mt-1">${fmtMoney(autoTotal)} recurrentes</div>` : ''}</div>
+        <div class="card p-4 md:p-5"><div class="text-xs text-gray-500">Gastos</div><div class="text-xl md:text-2xl font-semibold text-red-600">${fmtMoney(expTotal)}</div></div>
+        <div class="card p-4 md:p-5"><div class="text-xs text-gray-500">Balance</div><div class="text-xl md:text-2xl font-semibold ${balance>=0?'text-green-700':'text-red-600'}">${fmtMoney(balance)}</div></div>
+        <div class="card p-4 md:p-5"><div class="text-xs text-gray-500">Margen</div><div class="text-xl md:text-2xl font-semibold">${margin}%</div></div>
+      </div>
+
+      ${showBreakdown ? `
+        <div class="card p-4 md:p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold">Ingresos vs Gastos</h3>
+            <div class="flex items-center gap-3 text-xs text-gray-500">
+              <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-green-500"></span>Ingresos</span>
+              <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-red-500"></span>Gastos</span>
+            </div>
           </div>
-          <div class="space-y-1 max-h-80 overflow-y-auto">
-            ${inc.length === 0 ? '<div class="text-gray-400 text-sm">Sin ingresos este mes.</div>' : inc.map(i => {
+          <div class="bar-chart overflow-x-auto">
+            ${monthlyData.map(d => {
+              const [y, m] = d.month.split('-').map(Number);
+              const incH = maxAbs > 0 ? (d.income / maxAbs) * 140 : 0;
+              const expH = maxAbs > 0 ? (d.expense / maxAbs) * 140 : 0;
+              return `
+                <div class="bar-col" onclick="financeMode='month'; financeMonth='${d.month}'; render()" title="${MONTH_NAMES_FULL[m-1]} ${y}: +${fmtMoney(d.income)} / -${fmtMoney(d.expense)}">
+                  <div class="bar-pair">
+                    <div class="bar income" style="height:${incH}px"></div>
+                    <div class="bar expense" style="height:${expH}px"></div>
+                  </div>
+                  <div class="bar-label">${MONTH_NAMES_SHORT[m-1]}<br/>${String(y).slice(2)}</div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+
+          <div class="mt-5 pt-4 border-t border-gray-100 space-y-1.5">
+            ${monthlyData.map(d => {
+              const [y, m] = d.month.split('-').map(Number);
+              return `
+                <div class="flex items-center justify-between text-sm py-1 hover:bg-gray-50 rounded px-2 cursor-pointer" onclick="financeMode='month'; financeMonth='${d.month}'; render()">
+                  <span class="font-medium w-24">${MONTH_NAMES_SHORT[m-1]} ${y}</span>
+                  <span class="text-green-700 hidden sm:inline">+${fmtMoney(d.income)}</span>
+                  <span class="text-red-600 hidden sm:inline">−${fmtMoney(d.expense)}</span>
+                  <span class="font-semibold ${d.balance>=0?'text-green-700':'text-red-600'}">${fmtMoney(d.balance)}</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+        <div class="card p-4 md:p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold">Ingresos</h3>
+            <span class="text-xs text-gray-500">${inc.length} item${inc.length!==1?'s':''}</span>
+          </div>
+          <div class="space-y-1 max-h-96 overflow-y-auto">
+            ${inc.length === 0 ? '<div class="text-gray-400 text-sm">Sin ingresos en el período.</div>' : inc.map(i => {
               const p = getProject(i.projectId);
               if (i.auto) {
                 return `
                   <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm bg-green-50/40 rounded px-1 cursor-pointer hover:bg-green-50" onclick="openProjectDetail('${i.projectId}')" title="Se actualiza desde el proyecto">
                     <div>
                       <div class="font-medium flex items-center gap-1.5"><span class="text-[10px] chip bg-green-100 text-green-700">AUTO</span>${escapeHtml(i.concept)}</div>
-                      <div class="text-xs text-gray-500">Mensualidad recurrente</div>
+                      <div class="text-xs text-gray-500">${fmt(i.date)} · Mensualidad</div>
                     </div>
                     <span class="text-green-700 font-medium">${fmtMoney(i.amount)}</span>
                   </div>
@@ -1258,13 +1581,13 @@ function renderFinance() {
           </div>
         </div>
 
-        <div class="card p-5">
+        <div class="card p-4 md:p-5">
           <div class="flex items-center justify-between mb-3">
-            <h3 class="font-semibold">Gastos del mes</h3>
-            <span class="text-xs text-gray-500">${exp.length}</span>
+            <h3 class="font-semibold">Gastos</h3>
+            <span class="text-xs text-gray-500">${exp.length} item${exp.length!==1?'s':''}</span>
           </div>
-          <div class="space-y-1 max-h-80 overflow-y-auto">
-            ${exp.length === 0 ? '<div class="text-gray-400 text-sm">Sin gastos este mes.</div>' : exp.map(e => {
+          <div class="space-y-1 max-h-96 overflow-y-auto">
+            ${exp.length === 0 ? '<div class="text-gray-400 text-sm">Sin gastos en el período.</div>' : exp.map(e => {
               const p = getProject(e.projectId);
               return `
                 <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm group">
@@ -1314,15 +1637,15 @@ function renderReports() {
   return `
     ${viewHeader('Reportes', 'Tu radar del trabajo')}
 
-    <div class="px-10 pb-10 space-y-6">
-      <div class="grid grid-cols-4 gap-4">
+    <div class="px-4 md:px-10 pb-10 space-y-4 md:space-y-6">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         ${statCard('Total tareas', total)}
         ${statCard('Completadas', completed)}
         ${statCard('En progreso', inProgress)}
         ${statCard('Bloqueadas', blocked)}
       </div>
 
-      <div class="grid grid-cols-2 gap-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
         <div class="card p-5">
           <h3 class="font-semibold mb-3">Últimos 30 días</h3>
           <div class="text-3xl font-semibold">${recentlyDone}</div>
@@ -1360,7 +1683,7 @@ function renderGuide() {
   return `
     ${viewHeader('Manual de uso', 'Las reglas del sistema')}
 
-    <div class="px-10 pb-10 max-w-3xl space-y-6">
+    <div class="px-4 md:px-10 pb-10 max-w-3xl space-y-6">
       <div class="card p-6">
         <h3 class="font-semibold mb-3">Estados de tarea</h3>
         <div class="space-y-3 text-sm">
