@@ -156,7 +156,7 @@ alter publication supabase_realtime add table pragma_state;</code></pre>
 
 <!-- Modal host -->
 <div id="modal" class="fixed inset-0 z-50 hidden items-center justify-center modal-bg">
-  <div id="modalContent" class="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto fade-in"></div>
+  <div id="modalContent" class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto fade-in"></div>
 </div>
 
 <input type="file" id="fileInput" accept=".json" class="hidden" />
@@ -833,6 +833,107 @@ function projectCard(p) {
   `;
 }
 
+function hasProfileData(p) {
+  const keys = ['contactRole','contactPhone2','contactEmail2','companyName','taxId','industry','website','address','city','country','domain','domainProvider','domainExpiry','hostingProvider','serverInfo','adminUrl','credentialsLink','repoUrl','techStack','techNotes','instagram','facebook','linkedin','tiktok','source','firstContactDate','commercialNotes'];
+  return keys.some(k => p[k]);
+}
+
+function renderProfileSection(p) {
+  const has = (...keys) => keys.some(k => p[k]);
+
+  if (!hasProfileData(p) && !has('contactName','contactPhone','contactEmail')) {
+    return `
+      <div class="card p-4 border border-dashed border-gray-300 mb-4 text-center">
+        <p class="text-sm text-gray-500 mb-2">Sin perfil del cliente todavía.</p>
+        <button onclick="openProjectProfileModal('${p.id}')" class="btn-primary text-sm">+ Armar perfil del cliente</button>
+      </div>
+    `;
+  }
+
+  const block = (title, content) => content ? `
+    <div>
+      <div class="text-xs uppercase tracking-wider text-gray-500 mb-2 font-semibold">${title}</div>
+      ${content}
+    </div>
+  ` : '';
+
+  // Contact
+  const contactContent = has('contactName','contactPhone','contactPhone2','contactEmail','contactEmail2','contactRole') ? `
+    <div class="space-y-1 text-sm">
+      ${p.contactName ? `<div class="font-medium">${escapeHtml(p.contactName)}${p.contactRole?` <span class="text-gray-500 font-normal">· ${escapeHtml(p.contactRole)}</span>`:''}</div>` : ''}
+      ${p.contactPhone ? `<a href="https://wa.me/${p.contactPhone.replace(/[^\d]/g,'')}" target="_blank" class="block text-gray-700 hover:text-green-700">📱 ${escapeHtml(p.contactPhone)}</a>` : ''}
+      ${p.contactPhone2 ? `<a href="tel:${escapeAttr(p.contactPhone2)}" class="block text-gray-700 hover:text-gray-900">☎ ${escapeHtml(p.contactPhone2)}</a>` : ''}
+      ${p.contactEmail ? `<a href="mailto:${escapeAttr(p.contactEmail)}" class="block text-gray-700 hover:text-blue-700">✉ ${escapeHtml(p.contactEmail)}</a>` : ''}
+      ${p.contactEmail2 ? `<a href="mailto:${escapeAttr(p.contactEmail2)}" class="block text-gray-700 hover:text-blue-700">✉ ${escapeHtml(p.contactEmail2)}</a>` : ''}
+    </div>
+  ` : '';
+
+  // Company
+  const companyMeta = [p.taxId, p.industry].filter(Boolean);
+  const addr = [p.address, p.city, p.country].filter(Boolean);
+  const companyContent = has('companyName','taxId','industry','website','address','city','country') ? `
+    <div class="space-y-1 text-sm text-gray-700">
+      ${p.companyName ? `<div class="font-medium">${escapeHtml(p.companyName)}</div>` : ''}
+      ${companyMeta.length ? `<div class="text-gray-500 text-xs">${companyMeta.map(escapeHtml).join(' · ')}</div>` : ''}
+      ${p.website ? `<a href="${escapeAttr(p.website)}" target="_blank" class="text-blue-600 hover:underline block">🌐 ${escapeHtml(p.website.replace(/^https?:\/\//,''))}</a>` : ''}
+      ${addr.length ? `<div>📍 ${addr.map(escapeHtml).join(', ')}</div>` : ''}
+    </div>
+  ` : '';
+
+  // Technical
+  const techContent = has('domain','domainProvider','domainExpiry','hostingProvider','serverInfo','adminUrl','credentialsLink','repoUrl','techStack','techNotes') ? `
+    <div class="space-y-1 text-sm text-gray-700">
+      ${p.domain ? `<div><span class="text-gray-500">Dominio:</span> <span class="font-medium">${escapeHtml(p.domain)}</span>${p.domainProvider?` <span class="text-xs text-gray-500">(${escapeHtml(p.domainProvider)})</span>`:''}${p.domainExpiry?` <span class="text-xs ${p.domainExpiry<todayISO()?'text-red-600 font-medium':'text-gray-500'}">${p.domainExpiry<todayISO()?'⚠ venció':'vence'} ${fmt(p.domainExpiry)}</span>`:''}</div>` : ''}
+      ${p.hostingProvider ? `<div><span class="text-gray-500">Hosting:</span> <span class="font-medium">${escapeHtml(p.hostingProvider)}</span></div>` : ''}
+      ${p.serverInfo ? `<div><span class="text-gray-500">Server:</span> <span class="font-mono text-xs">${escapeHtml(p.serverInfo)}</span></div>` : ''}
+      ${p.techStack ? `<div><span class="text-gray-500">Stack:</span> ${escapeHtml(p.techStack)}</div>` : ''}
+      ${(p.adminUrl || p.credentialsLink || p.repoUrl) ? `
+        <div class="flex flex-wrap gap-1.5 mt-2">
+          ${p.adminUrl ? `<a href="${escapeAttr(p.adminUrl)}" target="_blank" class="chip bg-gray-100 text-gray-700 hover:bg-gray-200">⚙ Admin ↗</a>` : ''}
+          ${p.credentialsLink ? `<a href="${escapeAttr(p.credentialsLink)}" target="_blank" class="chip bg-amber-100 text-amber-800 hover:bg-amber-200">🔒 Credenciales ↗</a>` : ''}
+          ${p.repoUrl ? `<a href="${escapeAttr(p.repoUrl)}" target="_blank" class="chip bg-gray-900 text-white hover:bg-black">{ } Repo ↗</a>` : ''}
+        </div>
+      ` : ''}
+      ${p.techNotes ? `<div class="mt-2 p-2 bg-gray-50 rounded text-xs whitespace-pre-wrap">${escapeHtml(p.techNotes)}</div>` : ''}
+    </div>
+  ` : '';
+
+  // Social
+  const socialContent = has('instagram','facebook','linkedin','tiktok') ? `
+    <div class="flex flex-wrap gap-1.5">
+      ${p.instagram ? `<a href="https://instagram.com/${escapeAttr(p.instagram.replace('@',''))}" target="_blank" class="chip bg-pink-100 text-pink-700 hover:bg-pink-200">IG ${escapeHtml(p.instagram)}</a>` : ''}
+      ${p.facebook ? `<a href="${p.facebook.startsWith('http')?escapeAttr(p.facebook):'https://facebook.com/'+escapeAttr(p.facebook)}" target="_blank" class="chip bg-blue-100 text-blue-700 hover:bg-blue-200">Facebook ↗</a>` : ''}
+      ${p.linkedin ? `<a href="${escapeAttr(p.linkedin)}" target="_blank" class="chip bg-blue-100 text-blue-800 hover:bg-blue-200">LinkedIn ↗</a>` : ''}
+      ${p.tiktok ? `<a href="https://tiktok.com/@${escapeAttr(p.tiktok.replace('@',''))}" target="_blank" class="chip bg-gray-900 text-white hover:bg-black">TikTok ${escapeHtml(p.tiktok)}</a>` : ''}
+    </div>
+  ` : '';
+
+  // Commercial
+  const commercialContent = has('source','firstContactDate','commercialNotes') ? `
+    <div class="space-y-1 text-sm text-gray-700">
+      ${p.source ? `<div><span class="text-gray-500">Fuente:</span> ${escapeHtml(p.source)}</div>` : ''}
+      ${p.firstContactDate ? `<div><span class="text-gray-500">Primer contacto:</span> ${fmt(p.firstContactDate)}</div>` : ''}
+      ${p.commercialNotes ? `<div class="mt-1 p-2 bg-gray-50 rounded text-xs whitespace-pre-wrap">${escapeHtml(p.commercialNotes)}</div>` : ''}
+    </div>
+  ` : '';
+
+  return `
+    <div class="card p-4 md:p-5 mb-4">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-semibold">Perfil del cliente</h3>
+        <button onclick="openProjectProfileModal('${p.id}')" class="btn-ghost text-sm">Editar</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
+        ${block('Contacto', contactContent)}
+        ${block('Empresa', companyContent)}
+        ${block('Datos técnicos', techContent)}
+        ${block('Redes sociales', socialContent)}
+        ${block('Comercial', commercialContent)}
+      </div>
+    </div>
+  `;
+}
+
 function openProjectDetail(id) {
   const p = getProject(id);
   const s = PROJECT_STATUS[p.status] || PROJECT_STATUS.LEAD;
@@ -897,6 +998,8 @@ function openProjectDetail(id) {
       </div>
 
       ${p.description ? `<p class="text-sm text-gray-700 mb-4">${escapeHtml(p.description)}</p>` : ''}
+
+      ${renderProfileSection(p)}
 
       <div class="grid grid-cols-2 gap-3 mb-4">
         <div class="bg-gray-50 p-3 rounded-lg"><div class="text-xs text-gray-500">Ingresos</div><div class="text-lg font-semibold">${fmtMoney(incomes)}</div></div>
@@ -2123,6 +2226,111 @@ function deleteProject(id) {
   state.projects = state.projects.filter(p => p.id !== id);
   state.tasks    = state.tasks.filter(t => t.projectId !== id);
   save(); closeModal(); render();
+}
+
+// ---- Client profile modal ----
+function openProjectProfileModal(projectId) {
+  const p = getProject(projectId);
+  const v = {
+    contactName:'', contactRole:'', contactPhone:'', contactPhone2:'',
+    contactEmail:'', contactEmail2:'',
+    companyName:'', taxId:'', industry:'', website:'',
+    address:'', city:'', country:'',
+    domain:'', domainProvider:'', domainExpiry:'',
+    hostingProvider:'', serverInfo:'', adminUrl:'',
+    credentialsLink:'', repoUrl:'', techStack:'', techNotes:'',
+    instagram:'', facebook:'', linkedin:'', tiktok:'',
+    source:'', firstContactDate:'', commercialNotes:'',
+    ...p,
+  };
+
+  const fld = (name, label, type='text', value='', placeholder='', wide=false) => `
+    <div class="${wide?'col-span-2':''}">
+      <label class="text-xs text-gray-500">${label}</label>
+      <input type="${type}" name="${name}" class="input" value="${escapeAttr(value||'')}" placeholder="${escapeAttr(placeholder)}" />
+    </div>`;
+  const txt = (name, label, value='', rows=2) => `
+    <div class="col-span-2">
+      <label class="text-xs text-gray-500">${label}</label>
+      <textarea name="${name}" class="input" rows="${rows}">${escapeHtml(value||'')}</textarea>
+    </div>`;
+  const sec = (title) => `<h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold mt-5 mb-2 pb-1 border-b border-gray-100">${title}</h3>`;
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="w-3 h-3 rounded-full" style="background:${p.color}"></span>
+        <h2 class="text-xl font-semibold">Perfil del cliente</h2>
+      </div>
+      <p class="text-sm text-gray-500 mb-4">${escapeHtml(p.name)}</p>
+
+      <form onsubmit="saveProjectProfile(event, '${p.id}')">
+        ${sec('Contacto principal')}
+        <div class="grid grid-cols-2 gap-3">
+          ${fld('contactName',  'Nombre',           'text',  v.contactName)}
+          ${fld('contactRole',  'Cargo',            'text',  v.contactRole,  'Ej: CEO, Marketing')}
+          ${fld('contactPhone', 'WhatsApp',         'tel',   v.contactPhone, '+54 9 11...')}
+          ${fld('contactPhone2','Teléfono fijo',    'tel',   v.contactPhone2)}
+          ${fld('contactEmail', 'Email principal',  'email', v.contactEmail)}
+          ${fld('contactEmail2','Email secundario', 'email', v.contactEmail2)}
+        </div>
+
+        ${sec('Empresa')}
+        <div class="grid grid-cols-2 gap-3">
+          ${fld('companyName', 'Razón social', 'text', v.companyName)}
+          ${fld('taxId',       'CUIT / Tax ID','text', v.taxId)}
+          ${fld('industry',    'Industria',    'text', v.industry, 'Ej: Inmobiliario')}
+          ${fld('website',     'Sitio web',    'url',  v.website,  'https://...')}
+          ${fld('address',     'Dirección',    'text', v.address,  '', true)}
+          ${fld('city',        'Ciudad',       'text', v.city)}
+          ${fld('country',     'País',         'text', v.country)}
+        </div>
+
+        ${sec('Datos técnicos')}
+        <div class="grid grid-cols-2 gap-3">
+          ${fld('domain',          'Dominio',              'text', v.domain,          'empresa.com')}
+          ${fld('domainProvider',  'Proveedor dominio',    'text', v.domainProvider,  'Ej: NIC.ar, GoDaddy')}
+          ${fld('domainExpiry',    'Vencimiento dominio',  'date', v.domainExpiry)}
+          ${fld('hostingProvider', 'Hosting',              'text', v.hostingProvider, 'Ej: Vercel, AWS')}
+          ${fld('serverInfo',      'Server / IP',          'text', v.serverInfo)}
+          ${fld('adminUrl',        'Panel admin',          'url',  v.adminUrl,        'https://...')}
+          ${fld('credentialsLink', 'Credenciales (link)',  'url',  v.credentialsLink, '1Password, Bitwarden...')}
+          ${fld('repoUrl',         'Repositorio',          'url',  v.repoUrl,         'github.com/...')}
+          ${fld('techStack',       'Stack tecnológico',    'text', v.techStack,       'Next.js + Supabase', true)}
+          ${txt('techNotes',       'Notas técnicas',       v.techNotes, 3)}
+        </div>
+
+        ${sec('Redes sociales')}
+        <div class="grid grid-cols-2 gap-3">
+          ${fld('instagram', 'Instagram', 'text', v.instagram, '@usuario')}
+          ${fld('facebook',  'Facebook',  'text', v.facebook,  'facebook.com/...')}
+          ${fld('linkedin',  'LinkedIn',  'url',  v.linkedin)}
+          ${fld('tiktok',    'TikTok',    'text', v.tiktok,    '@usuario')}
+        </div>
+
+        ${sec('Comercial')}
+        <div class="grid grid-cols-2 gap-3">
+          ${fld('source',           'Cómo llegó',       'text', v.source, 'Referido, web, evento...')}
+          ${fld('firstContactDate', 'Primer contacto',  'date', v.firstContactDate)}
+          ${txt('commercialNotes',  'Notas comerciales', v.commercialNotes, 3)}
+        </div>
+
+        <div class="flex justify-end gap-2 pt-5 mt-4 border-t border-gray-100">
+          <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" class="btn-primary">Guardar perfil</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function saveProjectProfile(e, projectId) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  Object.assign(getProject(projectId), data);
+  save();
+  closeModal();
+  openProjectDetail(projectId);
 }
 
 // ---- Income / Expense modals ----
