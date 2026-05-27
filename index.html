@@ -6,6 +6,7 @@
 <title>Pragma Studio</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <style>
   html, body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif; }
   body { background: #fafafa; color: #111; }
@@ -48,6 +49,19 @@
     .pt-10 { padding-top: 1.5rem !important; }
     h1 { font-size: 1.5rem !important; }
   }
+
+  /* Drag and drop */
+  .draggable { cursor: grab; }
+  .draggable:active { cursor: grabbing; }
+  .dragging { opacity: 0.4; transform: scale(0.98); }
+  .drag-over { background: #dbeafe !important; outline: 2px dashed #3b82f6; outline-offset: -4px; }
+
+  /* Toast */
+  #toastContainer { position: fixed; top: 20px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  .toast { background: #111; color: #fff; padding: 12px 16px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.2); display: flex; align-items: center; gap: 10px; min-width: 280px; max-width: 360px; pointer-events: auto; animation: slideInRight .25s ease-out; }
+  .toast.success { background: #059669; }
+  .toast.info { background: #1d4ed8; }
+  @keyframes slideInRight { from { transform: translateX(110%); opacity: 0; } to { transform: none; opacity: 1; } }
 
   /* Custom bar chart */
   .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 180px; }
@@ -145,6 +159,9 @@ alter publication supabase_realtime add table pragma_state;</code></pre>
   <main id="main" class="flex-1 overflow-y-auto"></main>
 </div>
 
+<!-- Toast container -->
+<div id="toastContainer"></div>
+
 <!-- Notifications panel -->
 <div id="notifPanel" class="hidden fixed left-56 top-20 w-80 bg-white rounded-2xl shadow-2xl border border-gray-200 z-40 max-h-[70vh] overflow-hidden fade-in">
   <div class="p-4 border-b border-gray-100 flex items-center justify-between">
@@ -175,6 +192,7 @@ const DEFAULT_STATE = {
   notifications: [],  // { id, forMemberId, fromMemberId, taskId, text, read, createdAt }
   documents: [],      // { id, title, url, category, description, createdAt }
   resources: [],      // { id, title, url, category, description, createdAt }
+  emailConfig: { enabled: false, serviceId: '', templateId: '', publicKey: '' },
 };
 
 const DOC_CATEGORIES = ['Contrato', 'Propuesta', 'Brief', 'Plantilla', 'Legal', 'Guía interna', 'Otro'];
@@ -258,9 +276,16 @@ async function initSupabase() {
         (payload) => {
           const newRow = payload.new;
           if (!newRow || newRow.writer === CLIENT_ID) return;
+          const prevNotifIds = new Set((state.notifications || []).map(n => n.id));
           state = { ...structuredClone(DEFAULT_STATE), ...newRow.data };
           localStorage.setItem('pragma_state', JSON.stringify(state));
           setSyncStatus('Sincronizado', '#22c55e');
+          // Show toast for new notifications addressed to me
+          (state.notifications || []).forEach(n => {
+            if (!prevNotifIds.has(n.id) && n.forMemberId === currentMemberId && !n.read) {
+              showToast(n.text, 'info', 5000);
+            }
+          });
           renderNav();
           render();
         }
@@ -415,6 +440,84 @@ function notify(forMemberId, taskId, text) {
     read: false,
     createdAt: new Date().toISOString(),
   });
+  // Send email if configured
+  sendNotificationEmail(forMemberId, taskId, text);
+}
+
+// ---- Toast helper ----
+function showToast(message, type = 'info', duration = 4000) {
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `
+    <span class="text-lg flex-shrink-0">${type === 'success' ? '✓' : type === 'info' ? '🔔' : '!'}</span>
+    <span class="text-sm flex-1">${escapeHtml(message)}</span>
+  `;
+  toast.onclick = () => toast.remove();
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.transition = 'opacity .3s, transform .3s';
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(20px)';
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// ---- Email (EmailJS) ----
+function sendNotificationEmail(forMemberId, taskId, text) {
+  const cfg = state.emailConfig;
+  if (!cfg || !cfg.enabled || !cfg.serviceId || !cfg.templateId || !cfg.publicKey) return;
+  const member = getMember(forMemberId);
+  if (!member || !member.email) return;
+  const task = getTask(taskId);
+  const sender = currentMember();
+  if (typeof emailjs === 'undefined') return;
+  emailjs.send(cfg.serviceId, cfg.templateId, {
+    to_email: member.email,
+    to_name: member.name,
+    from_name: sender?.name || 'Pragma',
+    message: text,
+    task_title: task?.title || '',
+    task_url: window.location.href,
+  }, { publicKey: cfg.publicKey }).catch(err => console.warn('EmailJS error:', err));
+}
+
+// ---- Drag and drop for projects ----
+let _draggingProjectId = null;
+
+function dragProjectStart(e, projectId) {
+  _draggingProjectId = projectId;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', projectId);
+  e.currentTarget.classList.add('dragging');
+}
+function dragProjectEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+  _draggingProjectId = null;
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+function dragColOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+function dragColLeave(e) {
+  if (!e.currentTarget.contains(e.relatedTarget)) {
+    e.currentTarget.classList.remove('drag-over');
+  }
+}
+function dropProject(e, status) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const pid = _draggingProjectId || e.dataTransfer.getData('text/plain');
+  if (!pid) return;
+  const p = getProject(pid);
+  if (!p || p.status === status) return;
+  p.status = status;
+  save();
+  render();
+  showToast(`"${p.name}" → ${PROJECT_STATUS[status].label}`, 'success');
 }
 
 // ============ NAV ============
@@ -775,32 +878,107 @@ function renderGantt() {
 }
 
 // ============ PROJECTS ============
+let projectsViewMode = 'kanban'; // 'kanban' | 'list'
+let projectsListStatus = ''; // filter for list view
+
 function renderProjects() {
   return `
     ${viewHeader('Proyectos', `${state.projects.length} en total`,
-      `<button class="btn-primary" onclick="openProjectModal()">+ Nuevo</button>`)}
+      `<div class="flex gap-1 bg-gray-100 rounded-lg p-1">
+         <button class="px-3 py-1 rounded-md text-sm ${projectsViewMode==='kanban'?'bg-white shadow-sm font-medium':''}" onclick="projectsViewMode='kanban'; render()">Kanban</button>
+         <button class="px-3 py-1 rounded-md text-sm ${projectsViewMode==='list'?'bg-white shadow-sm font-medium':''}" onclick="projectsViewMode='list'; render()">Lista</button>
+       </div>
+       <button class="btn-primary" onclick="openProjectModal()">+ Nuevo</button>`)}
 
     <div class="px-4 md:px-10 pb-10">
-      ${state.projects.length === 0 ? `<div class="card p-10 text-center text-gray-400">Sin proyectos. Creá el primero.</div>` : `
-      <div class="flex gap-4 overflow-x-auto scroll-hide pb-4">
-        ${PROJECT_STATUS_ORDER.map(k => {
-          const s = PROJECT_STATUS[k];
-          const colProjects = state.projects.filter(p => p.status === k);
-          return `
-            <div class="kanban-col" style="width:280px;flex-shrink:0">
-              <div class="flex items-center justify-between mb-3 px-1">
-                <div class="flex items-center gap-2">
-                  <span class="chip ${s.color}">${s.label}</span>
-                  <span class="text-xs text-gray-500">${colProjects.length}</span>
-                </div>
-              </div>
-              <div>
-                ${colProjects.length === 0 ? '<div class="text-xs text-gray-400 px-2 py-3">Vacío</div>' : colProjects.map(p => projectCard(p)).join('')}
+      ${state.projects.length === 0
+        ? `<div class="card p-10 text-center text-gray-400">Sin proyectos. Creá el primero.</div>`
+        : (projectsViewMode === 'kanban' ? renderProjectsKanban() : renderProjectsList())
+      }
+    </div>
+  `;
+}
+
+function renderProjectsKanban() {
+  return `
+    <div class="flex gap-4 overflow-x-auto scroll-hide pb-4">
+      ${PROJECT_STATUS_ORDER.map(k => {
+        const s = PROJECT_STATUS[k];
+        const colProjects = state.projects.filter(p => p.status === k);
+        return `
+          <div class="kanban-col" style="width:280px;flex-shrink:0"
+               ondragover="dragColOver(event)"
+               ondragleave="dragColLeave(event)"
+               ondrop="dropProject(event, '${k}')">
+            <div class="flex items-center justify-between mb-3 px-1">
+              <div class="flex items-center gap-2">
+                <span class="chip ${s.color}">${s.label}</span>
+                <span class="text-xs text-gray-500">${colProjects.length}</span>
               </div>
             </div>
-          `;
-        }).join('')}
-      </div>`}
+            <div class="min-h-[60px]">
+              ${colProjects.length === 0
+                ? '<div class="text-xs text-gray-400 px-2 py-3 text-center border-2 border-dashed border-gray-200 rounded-lg">Arrastrá acá</div>'
+                : colProjects.map(p => projectCard(p)).join('')}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderProjectsList() {
+  // Optionally filter
+  const filtered = projectsListStatus ? state.projects.filter(p => p.status === projectsListStatus) : state.projects;
+  const sorted = [...filtered].sort((a, b) => {
+    const orderA = PROJECT_STATUS_ORDER.indexOf(a.status);
+    const orderB = PROJECT_STATUS_ORDER.indexOf(b.status);
+    if (orderA !== orderB) return orderA - orderB;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  return `
+    <div class="flex flex-wrap gap-2 mb-3">
+      <button onclick="projectsListStatus=''; render()" class="chip ${projectsListStatus===''?'bg-black text-white':'bg-gray-100 text-gray-700'} py-1.5 px-3 cursor-pointer">Todos (${state.projects.length})</button>
+      ${PROJECT_STATUS_ORDER.map(k => {
+        const n = state.projects.filter(p => p.status === k).length;
+        if (n === 0) return '';
+        const sc = PROJECT_STATUS[k];
+        return `<button onclick="projectsListStatus='${k}'; render()" class="chip ${projectsListStatus===k?'bg-black text-white':sc.color} py-1.5 px-3 cursor-pointer">${sc.label} (${n})</button>`;
+      }).join('')}
+    </div>
+
+    <div class="card divide-y divide-gray-100">
+      ${sorted.length === 0 ? '<div class="p-10 text-center text-gray-400 text-sm">Sin proyectos en esta categoría.</div>' : sorted.map(p => projectListRow(p)).join('')}
+    </div>
+  `;
+}
+
+function projectListRow(p) {
+  const s = PROJECT_STATUS[p.status] || PROJECT_STATUS.LEAD;
+  const pr = projectProgress(p.id);
+  const taskCount = state.tasks.filter(t => t.projectId === p.id).length;
+  const activeTasks = state.tasks.filter(t => t.projectId === p.id && t.status !== 'COMPLETED').length;
+  const blockedTasks = state.tasks.filter(t => t.projectId === p.id && t.status === 'BLOCKED').length;
+  return `
+    <div class="p-3 md:p-4 hover:bg-gray-50 cursor-pointer flex items-center gap-3" onclick="openProjectDetail('${p.id}')">
+      <span class="w-3 h-3 rounded-full flex-shrink-0" style="background:${p.color}"></span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-semibold text-sm truncate">${escapeHtml(p.name)}</span>
+          <span class="chip ${s.color}">${s.label}</span>
+          ${blockedTasks ? `<span class="chip bg-red-100 text-red-700">⚠ ${blockedTasks}</span>` : ''}
+        </div>
+        ${p.contactName ? `<div class="text-xs text-gray-500 truncate mt-0.5">${escapeHtml(p.contactName)}</div>` : ''}
+      </div>
+      ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="text-sm text-green-700 font-medium hidden sm:block whitespace-nowrap">${fmtMoney(p.monthlyFee)}/mes</div>` : ''}
+      <div class="text-xs text-gray-500 hidden md:flex items-center gap-3 w-44">
+        <div class="flex-1">
+          <div class="h-1 bg-gray-100 rounded-full overflow-hidden"><div class="h-full ${p.status==='DONE'||p.status==='ARCHIVED'?'bg-purple-500':'bg-black'}" style="width:${pr}%"></div></div>
+        </div>
+        <span class="whitespace-nowrap">${activeTasks}/${taskCount} · ${pr}%</span>
+      </div>
     </div>
   `;
 }
@@ -811,7 +989,11 @@ function projectCard(p) {
   const activeTasks = state.tasks.filter(t => t.projectId === p.id && t.status !== 'COMPLETED').length;
   const blockedTasks = state.tasks.filter(t => t.projectId === p.id && t.status === 'BLOCKED').length;
   return `
-    <div class="task-card" onclick="openProjectDetail('${p.id}')">
+    <div class="task-card draggable"
+         draggable="true"
+         ondragstart="dragProjectStart(event, '${p.id}')"
+         ondragend="dragProjectEnd(event)"
+         onclick="openProjectDetail('${p.id}')">
       <div class="flex items-center gap-2 mb-1">
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${p.color}"></span>
         <span class="text-sm font-semibold truncate flex-1">${escapeHtml(p.name)}</span>
@@ -1361,30 +1543,112 @@ function renderTeam() {
     ${viewHeader('Equipo', `${state.members.length} miembros`,
       `<button class="btn-primary" onclick="openMemberModal()">+ Miembro</button>`)}
 
-    <div class="px-4 md:px-10 pb-10 max-w-2xl">
+    <div class="px-4 md:px-10 pb-10 max-w-2xl space-y-6">
       <div class="card divide-y divide-gray-100">
         ${state.members.map(m => {
           const tasks = state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length;
           const isMe = m.id === currentMemberId;
           return `
-            <div class="p-4 flex items-center gap-3 hover:bg-gray-50">
-              <span class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
-              <div class="flex-1">
-                <div class="flex items-center gap-2">
+            <div class="p-4 flex items-center gap-3 hover:bg-gray-50 flex-wrap">
+              <span class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
                   <span class="font-medium">${escapeHtml(m.name)}</span>
                   ${isMe ? '<span class="chip bg-blue-100 text-blue-700">Vos</span>' : ''}
+                  ${m.email ? '<span class="chip bg-gray-100 text-gray-700">✉</span>' : ''}
                 </div>
-                <div class="text-xs text-gray-500">${tasks} tarea${tasks!==1?'s':''} activa${tasks!==1?'s':''}</div>
+                <div class="text-xs text-gray-500">${m.email ? escapeHtml(m.email) + ' · ' : ''}${tasks} tarea${tasks!==1?'s':''} activa${tasks!==1?'s':''}</div>
               </div>
-              <button class="btn-ghost text-sm" onclick="openMemberModal('${m.id}')">Editar</button>
-              ${!isMe ? `<button class="btn-ghost text-sm" onclick="setCurrentMember('${m.id}')">Ser ${escapeHtml(m.name)}</button>` : ''}
+              <div class="flex gap-1 flex-wrap">
+                <button class="btn-ghost text-sm" onclick="openMemberModal('${m.id}')">Editar</button>
+                ${!isMe ? `<button class="btn-ghost text-sm" onclick="setCurrentMember('${m.id}')">Ser ${escapeHtml(m.name)}</button>` : ''}
+              </div>
             </div>
           `;
         }).join('')}
       </div>
-      <p class="text-xs text-gray-500 mt-4">En comentarios podés escribir <b>@Nombre</b> para notificar a un miembro.</p>
+      <p class="text-xs text-gray-500">En comentarios escribí <b>@Nombre</b> para notificar a un miembro.</p>
+
+      ${renderEmailSettings()}
     </div>
   `;
+}
+
+function renderEmailSettings() {
+  const cfg = state.emailConfig || {};
+  return `
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <h3 class="font-semibold">Notificaciones por email</h3>
+          <p class="text-xs text-gray-500 mt-0.5">Via EmailJS · Gratis hasta 200 emails/mes</p>
+        </div>
+        <span class="chip ${cfg.enabled?'bg-green-100 text-green-700':'bg-gray-100 text-gray-600'}">${cfg.enabled?'Activo':'Desactivado'}</span>
+      </div>
+
+      <details class="text-sm text-gray-600 mb-4">
+        <summary class="cursor-pointer text-blue-600 hover:underline">¿Cómo configurar? (5 min, una vez)</summary>
+        <ol class="list-decimal pl-5 mt-2 space-y-1 text-xs">
+          <li>Andá a <a href="https://www.emailjs.com" target="_blank" class="text-blue-600 underline">emailjs.com</a> y creá cuenta gratis</li>
+          <li><b>Email Services</b> → conectá tu Gmail/Outlook → copiá el <b>Service ID</b></li>
+          <li><b>Email Templates</b> → crea uno con variables <code>{{to_email}}</code>, <code>{{to_name}}</code>, <code>{{from_name}}</code>, <code>{{message}}</code>, <code>{{task_title}}</code>, <code>{{task_url}}</code> → copiá el <b>Template ID</b></li>
+          <li><b>Account → General</b> → copiá la <b>Public Key</b></li>
+          <li>Pegá los 3 valores acá abajo, activá y dale Guardar</li>
+        </ol>
+      </details>
+
+      <form onsubmit="saveEmailConfig(event)" class="space-y-3">
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="emailEnabled" name="enabled" ${cfg.enabled?'checked':''} class="w-4 h-4" />
+          <label for="emailEnabled" class="text-sm font-medium">Enviar emails al asignar tareas o etiquetar</label>
+        </div>
+        <div><label class="text-xs text-gray-500">Service ID</label><input name="serviceId" class="input font-mono text-xs" value="${escapeAttr(cfg.serviceId||'')}" placeholder="service_xxxxxxx" /></div>
+        <div><label class="text-xs text-gray-500">Template ID</label><input name="templateId" class="input font-mono text-xs" value="${escapeAttr(cfg.templateId||'')}" placeholder="template_xxxxxxx" /></div>
+        <div><label class="text-xs text-gray-500">Public Key</label><input name="publicKey" class="input font-mono text-xs" value="${escapeAttr(cfg.publicKey||'')}" placeholder="usuario_xxxxxxx" /></div>
+        <div class="flex justify-between gap-2 pt-2">
+          <button type="button" class="btn-ghost text-sm" onclick="testEmail()" ${!cfg.enabled||!currentMember()?.email?'disabled':''}>Enviar test</button>
+          <button type="submit" class="btn-primary">Guardar</button>
+        </div>
+        ${!currentMember()?.email ? '<p class="text-xs text-amber-700">⚠ Cargá un email en tu perfil de miembro para probar.</p>' : ''}
+      </form>
+    </div>
+  `;
+}
+
+function saveEmailConfig(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  state.emailConfig = {
+    enabled: data.enabled === 'on',
+    serviceId: data.serviceId || '',
+    templateId: data.templateId || '',
+    publicKey: data.publicKey || '',
+  };
+  save();
+  render();
+  showToast('Configuración guardada', 'success');
+}
+
+function testEmail() {
+  const me = currentMember();
+  if (!me || !me.email) { alert('Cargá un email en tu perfil de miembro primero.'); return; }
+  const cfg = state.emailConfig;
+  if (!cfg || !cfg.serviceId || !cfg.templateId || !cfg.publicKey) { alert('Configurá Service ID, Template ID y Public Key primero.'); return; }
+  if (typeof emailjs === 'undefined') { alert('EmailJS no cargó. Recargá la página.'); return; }
+  showToast('Enviando email de prueba...', 'info', 2000);
+  emailjs.send(cfg.serviceId, cfg.templateId, {
+    to_email: me.email,
+    to_name: me.name,
+    from_name: 'Pragma Studio',
+    message: 'Esta es una notificación de prueba',
+    task_title: 'Test de configuración',
+    task_url: window.location.href,
+  }, { publicKey: cfg.publicKey })
+    .then(() => showToast('✓ Email enviado a ' + me.email, 'success', 5000))
+    .catch(err => {
+      console.error('EmailJS test error:', err);
+      alert('Falló el envío: ' + (err.text || err.message || 'error desconocido'));
+    });
 }
 
 function setCurrentMember(id) {
@@ -1394,13 +1658,14 @@ function setCurrentMember(id) {
 }
 
 function openMemberModal(id) {
-  const m = id ? getMember(id) : { id: null, name: '', color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6,'0') };
+  const m = id ? getMember(id) : { id: null, name: '', email: '', color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6,'0') };
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar miembro' : 'Nuevo miembro'}</h2>
       <form onsubmit="saveMember(event)" class="space-y-3">
         <input type="hidden" name="id" value="${m.id || ''}" />
         <div><label class="text-xs text-gray-500">Nombre</label><input name="name" class="input" required autofocus value="${escapeAttr(m.name)}" /></div>
+        <div><label class="text-xs text-gray-500">Email <span class="text-gray-400">(para recibir notificaciones)</span></label><input type="email" name="email" class="input" value="${escapeAttr(m.email || '')}" placeholder="tu@email.com" /></div>
         <div><label class="text-xs text-gray-500">Color</label><input type="color" name="color" class="input h-10" value="${m.color}" /></div>
         <div class="flex justify-between pt-3">
           <div>${id && id !== currentMemberId && state.members.length > 1 ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteMember('${id}')">Eliminar</button>` : ''}</div>
@@ -1996,6 +2261,8 @@ function saveTask(e) {
     }
     if (data.assigneeId && data.assigneeId !== oldAssignee && data.assigneeId !== currentMemberId) {
       notify(data.assigneeId, t.id, `Te asignaron: ${t.title}`);
+      const m = getMember(data.assigneeId);
+      showToast(`Asignada a ${m?.name || 'miembro'} · ${state.emailConfig?.enabled ? '✉ Email enviado' : ''}`, 'success');
     }
     t.updatedAt = new Date().toISOString();
   } else {
@@ -2010,6 +2277,8 @@ function saveTask(e) {
     pushHistory(t.id, 'created', null, null);
     if (data.assigneeId && data.assigneeId !== currentMemberId) {
       notify(data.assigneeId, t.id, `Te asignaron: ${t.title}`);
+      const m = getMember(data.assigneeId);
+      showToast(`Asignada a ${m?.name || 'miembro'} · ${state.emailConfig?.enabled ? '✉ Email enviado' : ''}`, 'success');
     }
   }
   save();
@@ -2536,6 +2805,15 @@ document.addEventListener('keydown', (e) => {
 // ============ BOOT ============
 renderNav();
 render();
+
+// Show pending notifications toast on app load
+setTimeout(() => {
+  const unread = (state.notifications || []).filter(n => n.forMemberId === currentMemberId && !n.read);
+  if (unread.length > 0) {
+    const recent = unread[unread.length - 1];
+    showToast(`Tenés ${unread.length} notificación${unread.length>1?'es':''} sin leer · ${recent.text}`, 'info', 6000);
+  }
+}, 800);
 
 // Init cloud sync (or show setup if not configured)
 if (getSupabaseConfig()) {
