@@ -197,7 +197,9 @@ const DEFAULT_STATE = {
   pragmaPhone: '',
   paymentMessageTemplate: 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount}\n\n¡Gracias!\nPragma Studio',
   defaultCurrency: 'ARS',
-  exchangeRate: 1200,  // ARS por USD
+  exchangeRate: 1200,             // ARS por USD
+  exchangeRateSource: 'manual',   // 'manual' | 'blue' | 'oficial' | 'mep' | 'cripto' | 'tarjeta'
+  exchangeRateUpdatedAt: null,
 };
 
 const INCOME_STATUS = {
@@ -1591,10 +1593,13 @@ function renderTeam() {
 }
 
 function renderFinanceSettings() {
+  const updatedLabel = state.exchangeRateUpdatedAt
+    ? new Date(state.exchangeRateUpdatedAt).toLocaleString('es-AR', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })
+    : 'nunca';
   return `
     <div class="card p-5">
       <h3 class="font-semibold mb-1">Configuración de finanzas</h3>
-      <p class="text-xs text-gray-500 mb-4">WhatsApp para recordatorios de cobro, moneda base y tipo de cambio</p>
+      <p class="text-xs text-gray-500 mb-4">Moneda base, WhatsApp para cobros y mensaje plantilla</p>
 
       <form onsubmit="saveFinanceSettings(event)" class="space-y-3">
         <div class="grid grid-cols-2 gap-3">
@@ -1606,8 +1611,11 @@ function renderFinanceSettings() {
             </select>
           </div>
           <div>
-            <label class="text-xs text-gray-500">Tipo de cambio (ARS por USD)</label>
-            <input type="number" step="1" name="exchangeRate" class="input" value="${state.exchangeRate || 1200}" />
+            <label class="text-xs text-gray-500">Cotización USD actual</label>
+            <button type="button" onclick="openExchangeRateModal()" class="input w-full text-left flex items-center justify-between hover:border-black transition">
+              <span class="font-semibold">$${(state.exchangeRate || 1200).toLocaleString('es-AR')}</span>
+              <span class="text-xs text-gray-500">${updatedLabel}</span>
+            </button>
           </div>
         </div>
 
@@ -1634,7 +1642,6 @@ function saveFinanceSettings(e) {
   e.preventDefault();
   const data = Object.fromEntries(new FormData(e.target).entries());
   state.defaultCurrency = data.defaultCurrency || 'ARS';
-  state.exchangeRate = Number(data.exchangeRate) || 1200;
   state.pragmaPhone = data.pragmaPhone || '';
   state.paymentMessageTemplate = data.paymentMessageTemplate || '';
   save();
@@ -1895,6 +1902,87 @@ function toBaseCurrency(amount, fromCurrency, toCurrency) {
   return Number(amount);
 }
 
+// ---- USD exchange rate ----
+const DOLAR_SOURCES = [
+  { key: 'blue',    label: 'Blue',     desc: 'Mercado paralelo' },
+  { key: 'oficial', label: 'Oficial',  desc: 'BCRA' },
+  { key: 'mep',     label: 'MEP/Bolsa',desc: 'AL30' },
+  { key: 'cripto',  label: 'Cripto',   desc: 'Stablecoin' },
+  { key: 'tarjeta', label: 'Tarjeta',  desc: 'Oficial + impuestos' },
+];
+
+async function fetchDollarRate(source = 'blue') {
+  try {
+    showToast('Buscando cotización...', 'info', 1500);
+    const res = await fetch(`https://dolarapi.com/v1/dolares/${source}`);
+    if (!res.ok) throw new Error('API error');
+    const data = await res.json();
+    const rate = Number(data.venta || data.compra);
+    if (!rate || isNaN(rate)) throw new Error('No rate');
+    state.exchangeRate = Math.round(rate);
+    state.exchangeRateSource = source;
+    state.exchangeRateUpdatedAt = data.fechaActualizacion || new Date().toISOString();
+    save();
+    showToast(`✓ Dólar ${source}: $${rate.toLocaleString('es-AR')}`, 'success', 3500);
+    render();
+  } catch (err) {
+    console.error('fetchDollarRate error:', err);
+    alert('No se pudo obtener la cotización. Cargala manual.\n\n' + (err.message || err));
+  }
+}
+
+function openExchangeRateModal() {
+  const updatedLabel = state.exchangeRateUpdatedAt
+    ? new Date(state.exchangeRateUpdatedAt).toLocaleString('es-AR', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })
+    : 'nunca';
+  const srcLabel = state.exchangeRateSource === 'manual' ? 'Manual'
+    : (DOLAR_SOURCES.find(s => s.key === state.exchangeRateSource)?.label || state.exchangeRateSource);
+
+  openModal(`
+    <div class="p-6">
+      <h2 class="text-xl font-semibold mb-1">Cotización del dólar</h2>
+      <p class="text-sm text-gray-500 mb-4">Actualizada: ${updatedLabel} · Fuente: ${srcLabel}</p>
+
+      <form onsubmit="saveManualRate(event)" class="space-y-3">
+        <div>
+          <label class="text-xs text-gray-500">Valor manual (ARS por USD)</label>
+          <div class="flex gap-2">
+            <input type="number" step="1" name="rate" class="input flex-1 text-lg font-semibold" value="${state.exchangeRate || 1200}" autofocus />
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
+        </div>
+      </form>
+
+      <div class="mt-5 pt-4 border-t border-gray-100">
+        <p class="text-xs text-gray-500 mb-2 uppercase tracking-wider font-semibold">Traer cotización del día</p>
+        <div class="grid grid-cols-2 gap-2">
+          ${DOLAR_SOURCES.map(s => `
+            <button onclick="fetchDollarRate('${s.key}'); closeModal()" class="text-left p-3 rounded-lg border border-gray-200 hover:border-black hover:bg-gray-50 transition">
+              <div class="font-medium text-sm">${s.label}</div>
+              <div class="text-xs text-gray-500">${s.desc}</div>
+            </button>
+          `).join('')}
+        </div>
+        <p class="text-[11px] text-gray-400 mt-3">Datos en vivo de <a href="https://dolarapi.com" target="_blank" class="underline">dolarapi.com</a></p>
+      </div>
+    </div>
+  `);
+}
+
+function saveManualRate(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const rate = Number(data.rate);
+  if (!rate || isNaN(rate)) return alert('Valor inválido');
+  state.exchangeRate = rate;
+  state.exchangeRateSource = 'manual';
+  state.exchangeRateUpdatedAt = new Date().toISOString();
+  save();
+  closeModal();
+  showToast('Cotización actualizada', 'success');
+  render();
+}
+
 function buildPaymentMessage(income) {
   const p = getProject(income.projectId);
   if (!p) return '';
@@ -2024,6 +2112,13 @@ function renderFinance() {
           <span class="text-gray-400 text-sm">→</span>
           <input type="date" class="input max-w-[150px]" value="${financeTo}" onchange="financeTo=this.value; render()" />
         ` : ''}
+
+        <span class="hidden sm:inline text-gray-300">·</span>
+        <button onclick="openExchangeRateModal()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-black hover:bg-gray-50 transition text-sm" title="Cotización del dólar">
+          <span class="text-gray-500 text-xs">USD</span>
+          <span class="font-semibold">$${(state.exchangeRate || 1200).toLocaleString('es-AR')}</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-gray-400"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+        </button>
       </div>
     </div>
 
