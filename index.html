@@ -193,6 +193,21 @@ const DEFAULT_STATE = {
   documents: [],      // { id, title, url, category, description, createdAt }
   resources: [],      // { id, title, url, category, description, createdAt }
   emailConfig: { enabled: false, serviceId: '', templateId: '', publicKey: '' },
+  recurringChargeLog: [],  // { id, projectId, month, chargedAt, chargedBy }
+  pragmaPhone: '',
+  paymentMessageTemplate: 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount}\n\n¡Gracias!\nPragma Studio',
+  defaultCurrency: 'ARS',
+  exchangeRate: 1200,  // ARS por USD
+};
+
+const INCOME_STATUS = {
+  PENDING:   { label: 'Pendiente',  color: 'bg-amber-100 text-amber-800' },
+  CHARGED:   { label: 'Cobrado',    color: 'bg-green-100 text-green-700' },
+  CONFIRMED: { label: 'Confirmado', color: 'bg-green-100 text-green-700' },
+};
+const EXPENSE_STATUS = {
+  PENDING: { label: 'Pendiente', color: 'bg-amber-100 text-amber-800' },
+  PAID:    { label: 'Pagado',    color: 'bg-gray-100 text-gray-700' },
 };
 
 const DOC_CATEGORIES = ['Contrato', 'Propuesta', 'Brief', 'Plantilla', 'Legal', 'Guía interna', 'Otro'];
@@ -972,7 +987,7 @@ function projectListRow(p) {
         </div>
         ${p.contactName ? `<div class="text-xs text-gray-500 truncate mt-0.5">${escapeHtml(p.contactName)}</div>` : ''}
       </div>
-      ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="text-sm text-green-700 font-medium hidden sm:block whitespace-nowrap">${fmtMoney(p.monthlyFee)}/mes</div>` : ''}
+      ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="text-sm text-green-700 font-medium hidden sm:block whitespace-nowrap">${fmtAmount(p.monthlyFee, p.monthlyFeeCurrency)}/mes</div>` : ''}
       <div class="text-xs text-gray-500 hidden md:flex items-center gap-3 w-44">
         <div class="flex-1">
           <div class="h-1 bg-gray-100 rounded-full overflow-hidden"><div class="h-full ${p.status==='DONE'||p.status==='ARCHIVED'?'bg-purple-500':'bg-black'}" style="width:${pr}%"></div></div>
@@ -999,7 +1014,7 @@ function projectCard(p) {
         <span class="text-sm font-semibold truncate flex-1">${escapeHtml(p.name)}</span>
       </div>
       ${p.contactName ? `<div class="text-xs text-gray-500 truncate">${escapeHtml(p.contactName)}</div>` : ''}
-      ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="text-xs text-green-700 font-medium mt-1">${fmtMoney(p.monthlyFee)}/mes</div>` : ''}
+      ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="text-xs text-green-700 font-medium mt-1">${fmtAmount(p.monthlyFee, p.monthlyFeeCurrency)}/mes</div>` : ''}
       ${taskCount > 0 ? `
         <div class="mt-3">
           <div class="flex justify-between text-[11px] text-gray-500 mb-1">
@@ -1570,8 +1585,61 @@ function renderTeam() {
       <p class="text-xs text-gray-500">En comentarios escribí <b>@Nombre</b> para notificar a un miembro.</p>
 
       ${renderEmailSettings()}
+      ${renderFinanceSettings()}
     </div>
   `;
+}
+
+function renderFinanceSettings() {
+  return `
+    <div class="card p-5">
+      <h3 class="font-semibold mb-1">Configuración de finanzas</h3>
+      <p class="text-xs text-gray-500 mb-4">WhatsApp para recordatorios de cobro, moneda base y tipo de cambio</p>
+
+      <form onsubmit="saveFinanceSettings(event)" class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-500">Moneda base</label>
+            <select name="defaultCurrency" class="input">
+              <option value="ARS" ${(state.defaultCurrency||'ARS')==='ARS'?'selected':''}>ARS (Pesos)</option>
+              <option value="USD" ${state.defaultCurrency==='USD'?'selected':''}>USD (Dólares)</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Tipo de cambio (ARS por USD)</label>
+            <input type="number" step="1" name="exchangeRate" class="input" value="${state.exchangeRate || 1200}" />
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">WhatsApp de Pragma <span class="text-gray-400">(remitente del recordatorio)</span></label>
+          <input type="tel" name="pragmaPhone" class="input" value="${escapeAttr(state.pragmaPhone || '')}" placeholder="+54 9 11 5555-5555" />
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Mensaje de recordatorio de cobro</label>
+          <textarea name="paymentMessageTemplate" class="input font-mono text-xs" rows="7">${escapeHtml(state.paymentMessageTemplate || '')}</textarea>
+          <p class="text-[11px] text-gray-500 mt-1">Variables disponibles: <code>{name}</code> · <code>{project}</code> · <code>{month}</code> · <code>{amount}</code> · <code>{client}</code></p>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2">
+          <button type="submit" class="btn-primary">Guardar</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function saveFinanceSettings(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  state.defaultCurrency = data.defaultCurrency || 'ARS';
+  state.exchangeRate = Number(data.exchangeRate) || 1200;
+  state.pragmaPhone = data.pragmaPhone || '';
+  state.paymentMessageTemplate = data.paymentMessageTemplate || '';
+  save();
+  showToast('Configuración guardada', 'success');
+  render();
 }
 
 function renderEmailSettings() {
@@ -1754,6 +1822,28 @@ function getFinanceRange() {
   return { from: financeFrom, to: financeTo, label: `${fmt(financeFrom)} → ${fmt(financeTo)}` };
 }
 
+function isMonthCharged(projectId, month) {
+  return (state.recurringChargeLog || []).some(r => r.projectId === projectId && r.month === month);
+}
+function getChargeRecord(projectId, month) {
+  return (state.recurringChargeLog || []).find(r => r.projectId === projectId && r.month === month);
+}
+function toggleMonthCharged(projectId, month) {
+  if (isMonthCharged(projectId, month)) {
+    state.recurringChargeLog = state.recurringChargeLog.filter(r => !(r.projectId === projectId && r.month === month));
+  } else {
+    state.recurringChargeLog.push({
+      id: uid(),
+      projectId,
+      month,
+      chargedAt: new Date().toISOString(),
+      chargedBy: currentMemberId,
+    });
+    showToast('Pago marcado como cobrado', 'success');
+  }
+  save(); render();
+}
+
 function getAutoIncomes(month) {
   // Ingresos virtuales a partir de proyectos ACTIVE_RECURRING con mensualidad
   const out = [];
@@ -1763,13 +1853,17 @@ function getAutoIncomes(month) {
     if (startMonth && startMonth > month) return;
     const endMonth = (p.endDate || '').slice(0, 7);
     if (endMonth && endMonth < month) return;
+    const charged = isMonthCharged(p.id, month);
     out.push({
       id: `auto-${p.id}-${month}`,
       amount: Number(p.monthlyFee),
+      currency: p.monthlyFeeCurrency || state.defaultCurrency || 'ARS',
       date: month + '-01',
+      month,
       concept: `Mensualidad · ${p.name}`,
       projectId: p.id,
       auto: true,
+      status: charged ? 'CHARGED' : 'PENDING',
     });
   });
   return out;
@@ -1785,6 +1879,48 @@ function inRange(date, from, to) {
   return date >= from && date <= to;
 }
 
+function fmtAmount(n, currency) {
+  const c = currency || state.defaultCurrency || 'ARS';
+  const symbol = c === 'USD' ? 'US$' : '$';
+  return symbol + (Number(n)||0).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function toBaseCurrency(amount, fromCurrency, toCurrency) {
+  const from = fromCurrency || 'ARS';
+  const to = toCurrency || state.defaultCurrency || 'ARS';
+  if (from === to) return Number(amount);
+  const rate = Number(state.exchangeRate) || 1200;
+  if (from === 'USD' && to === 'ARS') return Number(amount) * rate;
+  if (from === 'ARS' && to === 'USD') return Number(amount) / rate;
+  return Number(amount);
+}
+
+function buildPaymentMessage(income) {
+  const p = getProject(income.projectId);
+  if (!p) return '';
+  const [y, m] = (income.month || income.date || '').split('-');
+  const monthName = m ? `${MONTH_NAMES_FULL[Number(m)-1]} ${y}` : '';
+  const tpl = state.paymentMessageTemplate || '';
+  return tpl
+    .replace(/\{name\}/g, p.contactName || '')
+    .replace(/\{project\}/g, p.name || '')
+    .replace(/\{month\}/g, monthName)
+    .replace(/\{amount\}/g, fmtAmount(income.amount, income.currency))
+    .replace(/\{client\}/g, p.contactName || p.name || '');
+}
+
+function sendPaymentReminder(income) {
+  const p = getProject(income.projectId);
+  if (!p) return;
+  if (!p.contactPhone) {
+    alert('Este proyecto no tiene WhatsApp del cliente cargado. Editá el proyecto para agregarlo.');
+    return;
+  }
+  const msg = buildPaymentMessage(income);
+  const phone = p.contactPhone.replace(/[^\d]/g, '');
+  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
+}
+
 function monthBalance(month) {
   const m = month || financeMonth;
   const inc = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
@@ -1797,26 +1933,54 @@ function setFinanceMode(m) { financeMode = m; render(); }
 
 function renderFinance() {
   const { from, to, label } = getFinanceRange();
-  const realInc = state.incomes.filter(i => i.date && inRange(i.date, from, to));
+  const baseCur = state.defaultCurrency || 'ARS';
+
+  const realInc = state.incomes.filter(i => i.date && inRange(i.date, from, to))
+    .map(i => ({ ...i, status: i.status || 'CONFIRMED' }));
   const autoInc = getAutoIncomesInRange(from, to);
-  const inc = [...autoInc, ...realInc].sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  const exp = state.expenses.filter(e => e.date && inRange(e.date, from, to)).sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  const incTotal = inc.reduce((a,b) => a + Number(b.amount||0), 0);
-  const expTotal = exp.reduce((a,b) => a + Number(b.amount||0), 0);
-  const balance = incTotal - expTotal;
-  const margin = incTotal > 0 ? Math.round(balance / incTotal * 100) : 0;
-  const autoTotal = autoInc.reduce((a,b) => a + Number(b.amount||0), 0);
+  const inc = [...autoInc, ...realInc];
+  const exp = state.expenses.filter(e => e.date && inRange(e.date, from, to))
+    .map(e => ({ ...e, status: e.status || 'PAID' }));
+
+  // Totals in base currency, separated by confirmed/pending
+  const isIncConfirmed = (i) => i.auto ? i.status === 'CHARGED' : i.status === 'CONFIRMED';
+  const isExpPaid = (e) => e.status === 'PAID';
+  const incTotalConfirmed = inc.filter(isIncConfirmed).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+  const incTotalPending = inc.filter(i => !isIncConfirmed(i)).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+  const incTotal = incTotalConfirmed + incTotalPending;
+  const expTotalPaid = exp.filter(isExpPaid).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+  const expTotalPending = exp.filter(e => !isExpPaid(e)).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+  const expTotal = expTotalPaid + expTotalPending;
+  const balance = incTotalConfirmed - expTotalPaid;
+  const margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
 
   // Breakdown per month if range covers more than one month
   const monthsInRange = monthsBetween(from, to);
   const showBreakdown = monthsInRange.length > 1;
   const monthlyData = showBreakdown ? monthsInRange.map(m => {
-    const realI = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
-    const autoI = getAutoIncomes(m).reduce((a,b) => a + Number(b.amount||0), 0);
-    const e = state.expenses.filter(x => x.date && x.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
+    const realI = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+    const autoI = getAutoIncomes(m).filter(i => i.status === 'CHARGED').reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+    const e = state.expenses.filter(x => x.date && x.date.startsWith(m) && (x.status || 'PAID') === 'PAID').reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
     return { month: m, income: realI + autoI, expense: e, balance: realI + autoI - e };
   }) : [];
   const maxAbs = Math.max(1, ...monthlyData.map(d => Math.max(d.income, d.expense)));
+
+  // Group all items by month for the unified table
+  const itemsByMonth = {};
+  inc.forEach(i => {
+    const m = (i.month || i.date || '').slice(0,7);
+    if (!itemsByMonth[m]) itemsByMonth[m] = [];
+    itemsByMonth[m].push({ ...i, _kind: 'income' });
+  });
+  exp.forEach(e => {
+    const m = (e.date || '').slice(0,7);
+    if (!itemsByMonth[m]) itemsByMonth[m] = [];
+    itemsByMonth[m].push({ ...e, _kind: 'expense' });
+  });
+  Object.keys(itemsByMonth).forEach(m => {
+    itemsByMonth[m].sort((a,b) => (b.auto?1:0) - (a.auto?1:0) || (a.concept||'').localeCompare(b.concept||''));
+  });
+  const sortedMonths = Object.keys(itemsByMonth).sort();
 
   // Year selector options
   const allYears = (() => {
@@ -1865,10 +2029,24 @@ function renderFinance() {
 
     <div class="px-4 md:px-10 pb-10 space-y-4 md:space-y-6">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
-        <div class="card p-4 md:p-5"><div class="text-xs text-gray-500">Ingresos</div><div class="text-xl md:text-2xl font-semibold text-green-700">${fmtMoney(incTotal)}</div>${autoTotal ? `<div class="text-[11px] text-gray-500 mt-1">${fmtMoney(autoTotal)} recurrentes</div>` : ''}</div>
-        <div class="card p-4 md:p-5"><div class="text-xs text-gray-500">Gastos</div><div class="text-xl md:text-2xl font-semibold text-red-600">${fmtMoney(expTotal)}</div></div>
-        <div class="card p-4 md:p-5"><div class="text-xs text-gray-500">Balance</div><div class="text-xl md:text-2xl font-semibold ${balance>=0?'text-green-700':'text-red-600'}">${fmtMoney(balance)}</div></div>
-        <div class="card p-4 md:p-5"><div class="text-xs text-gray-500">Margen</div><div class="text-xl md:text-2xl font-semibold">${margin}%</div></div>
+        <div class="card p-4 md:p-5">
+          <div class="text-xs text-gray-500">Ingresos</div>
+          <div class="text-xl md:text-2xl font-semibold text-green-700">${fmtAmount(incTotalConfirmed, baseCur)}</div>
+          ${incTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(incTotalPending, baseCur)} pendiente</div>` : ''}
+        </div>
+        <div class="card p-4 md:p-5">
+          <div class="text-xs text-gray-500">Gastos</div>
+          <div class="text-xl md:text-2xl font-semibold text-red-600">${fmtAmount(expTotalPaid, baseCur)}</div>
+          ${expTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(expTotalPending, baseCur)} pendiente</div>` : ''}
+        </div>
+        <div class="card p-4 md:p-5">
+          <div class="text-xs text-gray-500">Balance</div>
+          <div class="text-xl md:text-2xl font-semibold ${balance>=0?'text-green-700':'text-red-600'}">${fmtAmount(balance, baseCur)}</div>
+        </div>
+        <div class="card p-4 md:p-5">
+          <div class="text-xs text-gray-500">Margen</div>
+          <div class="text-xl md:text-2xl font-semibold">${margin}%</div>
+        </div>
       </div>
 
       ${showBreakdown ? `
@@ -1913,69 +2091,117 @@ function renderFinance() {
         </div>
       ` : ''}
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
-        <div class="card p-4 md:p-5">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="font-semibold">Ingresos</h3>
-            <span class="text-xs text-gray-500">${inc.length} item${inc.length!==1?'s':''}</span>
-          </div>
-          <div class="space-y-1 max-h-96 overflow-y-auto">
-            ${inc.length === 0 ? '<div class="text-gray-400 text-sm">Sin ingresos en el período.</div>' : inc.map(i => {
-              const p = getProject(i.projectId);
-              if (i.auto) {
-                return `
-                  <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm bg-green-50/40 rounded px-1 cursor-pointer hover:bg-green-50" onclick="openProjectDetail('${i.projectId}')" title="Se actualiza desde el proyecto">
-                    <div>
-                      <div class="font-medium flex items-center gap-1.5"><span class="text-[10px] chip bg-green-100 text-green-700">AUTO</span>${escapeHtml(i.concept)}</div>
-                      <div class="text-xs text-gray-500">${fmt(i.date)} · Mensualidad</div>
-                    </div>
-                    <span class="text-green-700 font-medium">${fmtMoney(i.amount)}</span>
-                  </div>
-                `;
-              }
-              return `
-                <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm group">
-                  <div>
-                    <div class="font-medium">${escapeHtml(i.concept)}</div>
-                    <div class="text-xs text-gray-500">${p ? escapeHtml(p.name) : 'Sin proyecto'} · ${fmt(i.date)}</div>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <span class="text-green-700 font-medium">${fmtMoney(i.amount)}</span>
-                    <button class="opacity-0 group-hover:opacity-100 text-xs text-red-600" onclick="deleteIncome('${i.id}')">✕</button>
-                  </div>
-                </div>
-              `;
-            }).join('')}
+      <div class="card overflow-hidden">
+        <div class="px-4 md:px-5 py-3 md:py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+          <h3 class="font-semibold">Movimientos</h3>
+          <div class="flex items-center gap-3 text-xs text-gray-500">
+            <span>Total: <b class="text-gray-900">${inc.length + exp.length}</b></span>
+            <span class="hidden sm:inline">${inc.filter(i => !isIncConfirmed(i)).length + exp.filter(e => !isExpPaid(e)).length} pendientes</span>
           </div>
         </div>
 
-        <div class="card p-4 md:p-5">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="font-semibold">Gastos</h3>
-            <span class="text-xs text-gray-500">${exp.length} item${exp.length!==1?'s':''}</span>
+        ${sortedMonths.length === 0 ? `
+          <div class="p-10 text-center text-gray-400 text-sm">Sin movimientos en el período.</div>
+        ` : `
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wider">
+                <tr>
+                  <th class="text-left px-3 md:px-5 py-2.5 font-semibold w-20">Mes</th>
+                  <th class="text-left px-3 py-2.5 font-semibold">Descripción</th>
+                  <th class="text-right px-3 py-2.5 font-semibold">Ingreso</th>
+                  <th class="text-right px-3 py-2.5 font-semibold">Egreso</th>
+                  <th class="text-left px-3 py-2.5 font-semibold w-28">Estado</th>
+                  <th class="text-right px-3 md:px-5 py-2.5 font-semibold w-32"></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${sortedMonths.map(m => {
+                  const items = itemsByMonth[m];
+                  const [y, mm] = m.split('-').map(Number);
+                  const monthLabel = mm ? `${MONTH_NAMES_SHORT[mm-1]} ${String(y).slice(2)}` : '—';
+                  return items.map((it, idx) => {
+                    const p = getProject(it.projectId);
+                    const isInc = it._kind === 'income';
+                    const statusMap = isInc ? INCOME_STATUS : EXPENSE_STATUS;
+                    const status = statusMap[it.status] || statusMap[isInc ? 'CONFIRMED' : 'PAID'];
+                    const isPending = isInc ? !isIncConfirmed(it) : !isExpPaid(it);
+                    return `
+                      <tr class="border-t border-gray-100 hover:bg-gray-50 group">
+                        ${idx === 0 ? `<td class="px-3 md:px-5 py-3 align-top font-medium text-gray-700 bg-gray-50/50" rowspan="${items.length}">${monthLabel}</td>` : ''}
+                        <td class="px-3 py-2.5">
+                          <div class="flex items-center gap-2 flex-wrap">
+                            ${it.auto ? '<span class="text-[10px] chip bg-blue-100 text-blue-700">AUTO</span>' : ''}
+                            <span class="font-medium truncate">${escapeHtml(it.concept)}</span>
+                          </div>
+                          ${p ? `<div class="text-xs text-gray-500 mt-0.5">${escapeHtml(p.name)}${it.category && !isInc ? ' · ' + EXPENSE_CAT[it.category] : ''}</div>` : (it.category && !isInc ? `<div class="text-xs text-gray-500 mt-0.5">${EXPENSE_CAT[it.category]}</div>` : '')}
+                        </td>
+                        <td class="px-3 py-2.5 text-right ${isInc ? 'text-green-700 font-semibold' : 'text-gray-300'}">
+                          ${isInc ? fmtAmount(it.amount, it.currency) : '—'}
+                        </td>
+                        <td class="px-3 py-2.5 text-right ${!isInc ? 'text-red-600 font-semibold' : 'text-gray-300'}">
+                          ${!isInc ? fmtAmount(it.amount, it.currency) : '—'}
+                        </td>
+                        <td class="px-3 py-2.5">
+                          ${it.auto
+                            ? `<button onclick="toggleMonthCharged('${it.projectId}','${it.month}')" class="chip ${status.color} cursor-pointer hover:opacity-80" title="${isPending ? 'Marcar como cobrado' : 'Marcar como pendiente'}">${status.label}</button>`
+                            : `<button onclick="toggleItemStatus('${it._kind}','${it.id}')" class="chip ${status.color} cursor-pointer hover:opacity-80">${status.label}</button>`
+                          }
+                        </td>
+                        <td class="px-3 md:px-5 py-2.5 text-right">
+                          <div class="flex items-center justify-end gap-1">
+                            ${isInc && it.auto && isPending && p && p.contactPhone ? `
+                              <button onclick="sendPaymentReminder(${JSON.stringify(it).replace(/"/g, '&quot;')})" class="text-green-700 hover:bg-green-50 p-1.5 rounded-md transition" title="Enviar recordatorio por WhatsApp">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
+                              </button>
+                            ` : ''}
+                            ${!it.auto ? `
+                              <button onclick="${isInc?'openIncomeModal':'openExpenseModal'}('${it.id}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition">✎</button>
+                              <button onclick="${isInc?'deleteIncome':'deleteExpense'}('${it.id}')" class="opacity-0 group-hover:opacity-100 text-red-500 text-xs px-1.5 transition">✕</button>
+                            ` : ''}
+                          </div>
+                        </td>
+                      </tr>
+                    `;
+                  }).join('');
+                }).join('')}
+              </tbody>
+              <tfoot class="bg-gray-50 font-semibold border-t-2 border-gray-200">
+                <tr>
+                  <td colspan="2" class="px-3 md:px-5 py-3 text-right text-xs uppercase tracking-wider text-gray-500">Total confirmado</td>
+                  <td class="px-3 py-3 text-right text-green-700">${fmtAmount(incTotalConfirmed, baseCur)}</td>
+                  <td class="px-3 py-3 text-right text-red-600">${fmtAmount(expTotalPaid, baseCur)}</td>
+                  <td colspan="2" class="px-3 md:px-5 py-3 text-right ${balance>=0?'text-green-700':'text-red-600'}">${fmtAmount(balance, baseCur)}</td>
+                </tr>
+                ${(incTotalPending > 0 || expTotalPending > 0) ? `
+                  <tr class="text-amber-700">
+                    <td colspan="2" class="px-3 md:px-5 py-2 text-right text-xs uppercase tracking-wider">Pendiente</td>
+                    <td class="px-3 py-2 text-right">${incTotalPending > 0 ? '+' + fmtAmount(incTotalPending, baseCur) : '—'}</td>
+                    <td class="px-3 py-2 text-right">${expTotalPending > 0 ? fmtAmount(expTotalPending, baseCur) : '—'}</td>
+                    <td colspan="2"></td>
+                  </tr>
+                ` : ''}
+              </tfoot>
+            </table>
           </div>
-          <div class="space-y-1 max-h-96 overflow-y-auto">
-            ${exp.length === 0 ? '<div class="text-gray-400 text-sm">Sin gastos en el período.</div>' : exp.map(e => {
-              const p = getProject(e.projectId);
-              return `
-                <div class="flex items-center justify-between py-2 border-b border-gray-50 text-sm group">
-                  <div>
-                    <div class="font-medium">${escapeHtml(e.concept)}</div>
-                    <div class="text-xs text-gray-500">${EXPENSE_CAT[e.category]}${p ? ' · ' + escapeHtml(p.name) : ''} · ${fmt(e.date)}</div>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <span class="text-red-600 font-medium">${fmtMoney(e.amount)}</span>
-                    <button class="opacity-0 group-hover:opacity-100 text-xs text-red-600" onclick="deleteExpense('${e.id}')">✕</button>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
-        </div>
+        `}
       </div>
 
     </div>
   `;
+}
+
+function toggleItemStatus(kind, id) {
+  if (kind === 'income') {
+    const i = state.incomes.find(x => x.id === id);
+    if (!i) return;
+    i.status = (i.status === 'CONFIRMED' || !i.status) ? 'PENDING' : 'CONFIRMED';
+  } else {
+    const e = state.expenses.find(x => x.id === id);
+    if (!e) return;
+    e.status = (e.status === 'PAID' || !e.status) ? 'PENDING' : 'PAID';
+  }
+  save(); render();
 }
 
 // ============ REPORTS ============
@@ -2408,7 +2634,7 @@ function addComment(e, taskId) {
 
 // ---- Project modal ----
 function openProjectModal(id) {
-  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', contactName: '', contactEmail: '', contactPhone: '', systemUrl: '' };
+  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', monthlyFeeCurrency: state.defaultCurrency || 'ARS', contactName: '', contactEmail: '', contactPhone: '', systemUrl: '' };
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar proyecto' : 'Nuevo proyecto'}</h2>
@@ -2459,7 +2685,13 @@ function openProjectModal(id) {
           </div>
           <div>
             <label class="text-xs text-gray-500">Mensualidad</label>
-            <input type="number" name="monthlyFee" class="input" value="${p.monthlyFee || ''}" placeholder="0" />
+            <div class="flex gap-1">
+              <input type="number" name="monthlyFee" class="input flex-1" value="${p.monthlyFee || ''}" placeholder="0" />
+              <select name="monthlyFeeCurrency" class="input w-20">
+                <option value="ARS" ${(p.monthlyFeeCurrency||'ARS')==='ARS'?'selected':''}>ARS</option>
+                <option value="USD" ${p.monthlyFeeCurrency==='USD'?'selected':''}>USD</option>
+              </select>
+            </div>
           </div>
           <div class="col-span-2">
             <label class="text-xs text-gray-500">Color</label>
@@ -2604,27 +2836,46 @@ function saveProjectProfile(e, projectId) {
 
 // ---- Income / Expense modals ----
 function openIncomeModal(id) {
-  const i = id ? state.incomes.find(x => x.id === id) : { id: null, concept: '', amount: '', date: todayISO(), projectId: '' };
+  const i = id ? state.incomes.find(x => x.id === id) : { id: null, concept: '', amount: '', currency: state.defaultCurrency || 'ARS', date: todayISO(), projectId: '', status: 'CONFIRMED' };
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar ingreso' : 'Nuevo ingreso'}</h2>
       <form onsubmit="saveIncome(event)" class="space-y-3">
         <input type="hidden" name="id" value="${i.id || ''}" />
         <div><label class="text-xs text-gray-500">Concepto</label><input name="concept" class="input" required autofocus value="${escapeAttr(i.concept)}" /></div>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-3 gap-3">
           <div><label class="text-xs text-gray-500">Monto</label><input type="number" step="0.01" name="amount" class="input" required value="${i.amount}" /></div>
+          <div>
+            <label class="text-xs text-gray-500">Moneda</label>
+            <select name="currency">
+              <option value="ARS" ${(i.currency||'ARS')==='ARS'?'selected':''}>ARS</option>
+              <option value="USD" ${i.currency==='USD'?'selected':''}>USD</option>
+            </select>
+          </div>
           <div><label class="text-xs text-gray-500">Fecha</label><input type="date" name="date" class="input" required value="${i.date}" /></div>
         </div>
-        <div>
-          <label class="text-xs text-gray-500">Proyecto</label>
-          <select name="projectId">
-            <option value="">Sin proyecto</option>
-            ${state.projects.map(p => `<option value="${p.id}" ${i.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
-          </select>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-500">Proyecto</label>
+            <select name="projectId">
+              <option value="">Sin proyecto</option>
+              ${state.projects.map(p => `<option value="${p.id}" ${i.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Estado</label>
+            <select name="status">
+              <option value="CONFIRMED" ${(i.status||'CONFIRMED')==='CONFIRMED'?'selected':''}>Confirmado / Cobrado</option>
+              <option value="PENDING"   ${i.status==='PENDING'?'selected':''}>Pendiente de cobro</option>
+            </select>
+          </div>
         </div>
-        <div class="flex justify-end gap-2 pt-3">
-          <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
-          <button type="submit" class="btn-primary">Guardar</button>
+        <div class="flex justify-${id?'between':'end'} gap-2 pt-3">
+          ${id ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteIncome('${id}')">Eliminar</button>` : ''}
+          <div class="flex gap-2">
+            <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
         </div>
       </form>
     </div>
@@ -2642,19 +2893,26 @@ function saveIncome(e) {
 function deleteIncome(id) {
   if (!confirm('¿Eliminar ingreso?')) return;
   state.incomes = state.incomes.filter(x => x.id !== id);
-  save(); render();
+  save(); closeModal(); render();
 }
 
 function openExpenseModal(id) {
-  const ex = id ? state.expenses.find(x => x.id === id) : { id: null, concept: '', amount: '', date: todayISO(), category: 'VARIABLE', projectId: '' };
+  const ex = id ? state.expenses.find(x => x.id === id) : { id: null, concept: '', amount: '', currency: state.defaultCurrency || 'ARS', date: todayISO(), category: 'VARIABLE', projectId: '', status: 'PAID' };
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar gasto' : 'Nuevo gasto'}</h2>
       <form onsubmit="saveExpense(event)" class="space-y-3">
         <input type="hidden" name="id" value="${ex.id || ''}" />
         <div><label class="text-xs text-gray-500">Concepto</label><input name="concept" class="input" required autofocus value="${escapeAttr(ex.concept)}" /></div>
-        <div class="grid grid-cols-3 gap-3">
+        <div class="grid grid-cols-4 gap-3">
           <div><label class="text-xs text-gray-500">Monto</label><input type="number" step="0.01" name="amount" class="input" required value="${ex.amount}" /></div>
+          <div>
+            <label class="text-xs text-gray-500">Moneda</label>
+            <select name="currency">
+              <option value="ARS" ${(ex.currency||'ARS')==='ARS'?'selected':''}>ARS</option>
+              <option value="USD" ${ex.currency==='USD'?'selected':''}>USD</option>
+            </select>
+          </div>
           <div><label class="text-xs text-gray-500">Fecha</label><input type="date" name="date" class="input" required value="${ex.date}" /></div>
           <div>
             <label class="text-xs text-gray-500">Categoría</label>
@@ -2663,16 +2921,28 @@ function openExpenseModal(id) {
             </select>
           </div>
         </div>
-        <div>
-          <label class="text-xs text-gray-500">Proyecto (para rentabilidad)</label>
-          <select name="projectId">
-            <option value="">Sin proyecto</option>
-            ${state.projects.map(p => `<option value="${p.id}" ${ex.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
-          </select>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-500">Proyecto</label>
+            <select name="projectId">
+              <option value="">Sin proyecto</option>
+              ${state.projects.map(p => `<option value="${p.id}" ${ex.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Estado</label>
+            <select name="status">
+              <option value="PAID"    ${(ex.status||'PAID')==='PAID'?'selected':''}>Pagado</option>
+              <option value="PENDING" ${ex.status==='PENDING'?'selected':''}>Pendiente</option>
+            </select>
+          </div>
         </div>
-        <div class="flex justify-end gap-2 pt-3">
-          <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
-          <button type="submit" class="btn-primary">Guardar</button>
+        <div class="flex justify-${id?'between':'end'} gap-2 pt-3">
+          ${id ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteExpense('${id}')">Eliminar</button>` : ''}
+          <div class="flex gap-2">
+            <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
         </div>
       </form>
     </div>
@@ -2690,7 +2960,7 @@ function saveExpense(e) {
 function deleteExpense(id) {
   if (!confirm('¿Eliminar gasto?')) return;
   state.expenses = state.expenses.filter(x => x.id !== id);
-  save(); render();
+  save(); closeModal(); render();
 }
 
 // ============ NOTIFICATIONS PANEL ============
