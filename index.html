@@ -2032,6 +2032,21 @@ function reactivateRecurringExpense(expenseId) {
   showToast('Gasto fijo reactivado', 'success');
 }
 
+// Borrado total: elimina el gasto + todo el historial de pagos recurrentes
+function deleteRecurringExpenseFull(expenseId) {
+  const e = state.expenses.find(x => x.id === expenseId);
+  if (!e) return;
+  const paymentsCount = (state.recurringExpensePayments || []).filter(r => r.expenseId === expenseId).length;
+  const detail = paymentsCount > 0
+    ? `\n\nSe va a borrar el gasto original y los ${paymentsCount} pago${paymentsCount>1?'s':''} registrado${paymentsCount>1?'s':''}.`
+    : '';
+  if (!confirm(`¿Eliminar completamente "${e.concept}"?${detail}\n\nEsto NO se puede deshacer.`)) return;
+  state.expenses = state.expenses.filter(x => x.id !== expenseId);
+  state.recurringExpensePayments = (state.recurringExpensePayments || []).filter(r => r.expenseId !== expenseId);
+  save(); render();
+  showToast('Gasto eliminado completamente', 'success');
+}
+
 function inRange(date, from, to) {
   return date >= from && date <= to;
 }
@@ -2603,8 +2618,8 @@ function renderFinance() {
                               </button>
                             ` : ''}
                             ${it.auto && !isInc ? `
-                              <button onclick="openExpenseModal('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition" title="Editar gasto original">✎</button>
-                              <button onclick="cancelRecurringExpense('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-red-500 text-xs px-1.5 transition" title="Dar de baja este gasto fijo">✕</button>
+                              <button onclick="openExpenseModal('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition" title="Editar gasto original (acá podés ponerle &quot;Pagar hasta&quot; para dar de baja a futuro)">✎</button>
+                              <button onclick="deleteRecurringExpenseFull('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-red-500 text-xs px-1.5 transition" title="Eliminar completamente este gasto fijo (borra historial)">✕</button>
                             ` : ''}
                             ${!it.auto ? `
                               <button onclick="${isInc?'openIncomeModal':'openExpenseModal'}('${it.id}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition">✎</button>
@@ -3502,8 +3517,14 @@ function saveExpense(e) {
   save(); closeModal(); render();
 }
 function deleteExpense(id) {
-  if (!confirm('¿Eliminar gasto?')) return;
+  const e = state.expenses.find(x => x.id === id);
+  const paymentsCount = e ? (state.recurringExpensePayments || []).filter(r => r.expenseId === id).length : 0;
+  const detail = paymentsCount > 0
+    ? `\n\nTambién se borrarán los ${paymentsCount} pago${paymentsCount>1?'s':''} recurrente${paymentsCount>1?'s':''} registrado${paymentsCount>1?'s':''}.`
+    : '';
+  if (!confirm(`¿Eliminar gasto?${detail}`)) return;
   state.expenses = state.expenses.filter(x => x.id !== id);
+  state.recurringExpensePayments = (state.recurringExpensePayments || []).filter(r => r.expenseId !== id);
   save(); closeModal(); render();
 }
 
