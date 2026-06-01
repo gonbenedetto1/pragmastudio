@@ -195,7 +195,7 @@ const DEFAULT_STATE = {
   emailConfig: { enabled: false, serviceId: '', templateId: '', publicKey: '' },
   recurringChargeLog: [],  // { id, projectId, month, chargedAt, chargedBy }
   pragmaPhone: '',
-  paymentMessageTemplate: 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount} (≈ {amountARS} al cambio de hoy, cotización USD {rate})\n\n¡Gracias!\nPragma Studio',
+  paymentMessageTemplate: 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount}\n\n¡Gracias!\nPragma Studio',
   defaultCurrency: 'ARS',
   exchangeRate: 1200,             // ARS por USD
   exchangeRateSource: 'manual',   // 'manual' | 'blue' | 'oficial' | 'mep' | 'cripto' | 'tarjeta'
@@ -1670,7 +1670,9 @@ function insertTemplateVar(key) {
 function getTemplatePreview(tpl) {
   // Sample: simulamos una mensualidad de US$20 a la cotización actual
   const sampleAmountUSD = 20;
+  const base = state.defaultCurrency || 'ARS';
   const rate = Number(state.exchangeRate) || 1200;
+  const sampleInBase = base === 'ARS' ? sampleAmountUSD * rate : sampleAmountUSD;
   const sample = {
     name: 'Juan Pérez',
     client: 'Juan Pérez',
@@ -1678,10 +1680,11 @@ function getTemplatePreview(tpl) {
     company: 'Inmobiliaria Pérez SA',
     role: 'Director',
     month: `${MONTH_NAMES_FULL[new Date().getMonth()]} ${new Date().getFullYear()}`,
-    amount:     fmtAmount(sampleAmountUSD, 'USD'),
-    amountARS:  fmtAmount(sampleAmountUSD * rate, 'ARS'),
-    amountUSD:  fmtAmount(sampleAmountUSD, 'USD'),
-    rate:       '$' + rate.toLocaleString('es-AR'),
+    amount:         fmtAmount(sampleInBase, base),
+    amountOriginal: fmtAmount(sampleAmountUSD, 'USD'),
+    amountARS:      fmtAmount(sampleAmountUSD * rate, 'ARS'),
+    amountUSD:      fmtAmount(sampleAmountUSD, 'USD'),
+    rate:           '$' + rate.toLocaleString('es-AR'),
     date: new Date().toLocaleDateString('es-AR', { day:'2-digit', month:'long', year:'numeric' }),
   };
   let out = tpl || '';
@@ -2130,9 +2133,15 @@ const PAYMENT_VARS = [
       const [y, mm] = (i.month || i.date || '').split('-');
       return mm ? `${MONTH_NAMES_FULL[Number(mm)-1]} ${y}` : '';
     } },
-  { key: 'amount',     label: 'Monto original',   resolve: (p, i) => fmtAmount(i.amount, i.currency) },
+  // {amount} → SIEMPRE convertido a moneda base (ARS por defecto) al cambio actual
+  { key: 'amount', label: 'Monto (moneda base)', resolve: (p, i) => {
+      const base = state.defaultCurrency || 'ARS';
+      const rate = Number(state.exchangeRate) || 1200;
+      const converted = convertAt(i.amount, i.currency, base, rate);
+      return fmtAmount(converted, base);
+    } },
+  { key: 'amountOriginal', label: 'Monto original', resolve: (p, i) => fmtAmount(i.amount, i.currency) },
   { key: 'amountARS',  label: 'Monto en ARS hoy', resolve: (p, i) => {
-      // Para cobros: siempre usa cotización del momento (actual)
       if (i.currency === 'ARS') return fmtAmount(i.amount, 'ARS');
       const rate = Number(state.exchangeRate) || 1200;
       return fmtAmount(Number(i.amount) * rate, 'ARS');
@@ -3456,6 +3465,16 @@ document.addEventListener('keydown', (e) => {
 // ============ BOOT ============
 renderNav();
 render();
+
+// Migración: si todavía tenés la plantilla vieja redundante, pasala a la nueva
+(function migratePaymentTemplate() {
+  const OLD = 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount} (≈ {amountARS} al cambio de hoy, cotización USD {rate})\n\n¡Gracias!\nPragma Studio';
+  const NEW = 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount}\n\n¡Gracias!\nPragma Studio';
+  if (state.paymentMessageTemplate === OLD) {
+    state.paymentMessageTemplate = NEW;
+    save();
+  }
+})();
 
 // Show pending notifications toast on app load + auto-refresh blue dollar
 setTimeout(() => {
