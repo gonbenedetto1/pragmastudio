@@ -193,8 +193,10 @@ const DEFAULT_STATE = {
   documents: [],      // { id, title, url, category, description, createdAt }
   resources: [],      // { id, title, url, category, description, createdAt }
   emailConfig: { enabled: false, serviceId: '', templateId: '', publicKey: '' },
-  recurringChargeLog: [],         // { id, projectId, month, chargedAt, chargedBy }
-  recurringExpensePayments: [],   // { id, expenseId, month, paidAt, paidBy, exchangeRate }
+  recurringChargeLog: [],         // { id, projectId, month, amount?, chargedAt, chargedBy, exchangeRate, note }
+  recurringExpensePayments: [],   // { id, expenseId, month, amount?, paidAt, paidBy, exchangeRate, note }
+  incomePayments: [],             // { id, incomeId, amount, date, paidAt, paidBy, exchangeRate, note }
+  expensePayments: [],            // { id, expenseId, amount, date, paidAt, paidBy, exchangeRate, note }
   pragmaPhone: '',
   paymentMessageTemplate: 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount}\n\n¡Gracias!\nPragma Studio',
   defaultCurrency: 'ARS',
@@ -2024,6 +2026,218 @@ function cancelRecurringExpense(expenseId) {
   showToast('Gasto fijo dado de baja desde el próximo mes', 'success');
 }
 
+// ============ PARTIAL PAYMENTS ============
+// Devuelve { expected, totalPaid, remaining, percent, status, payments[] }
+function getPaymentSummary(item) {
+  const expected = Number(item.amount) || 0;
+  let payments = [];
+  let kind = '';
+
+  if (item.auto && item.sourceExpenseId) {
+    kind = 'expense_recurring';
+    payments = (state.recurringExpensePayments || []).filter(r => r.expenseId === item.sourceExpenseId && r.month === item.month);
+  } else if (item.auto) {
+    kind = 'income_recurring';
+    payments = (state.recurringChargeLog || []).filter(r => r.projectId === item.projectId && r.month === item.month);
+  } else if (item._kind === 'income') {
+    kind = 'income';
+    payments = (state.incomePayments || []).filter(p => p.incomeId === item.id);
+    // Backwards compat: status=CONFIRMED sin pagos = pago completo sintético
+    if (payments.length === 0 && (item.status || 'CONFIRMED') === 'CONFIRMED') {
+      payments = [{ id: '__synth__'+item.id, amount: expected, exchangeRate: item.exchangeRateAtTime || state.exchangeRate, synthetic: true, paidAt: item.confirmedAt || item.date }];
+    }
+  } else if (item._kind === 'expense') {
+    kind = 'expense';
+    payments = (state.expensePayments || []).filter(p => p.expenseId === item.id);
+    if (payments.length === 0 && (item.status || 'PAID') === 'PAID') {
+      payments = [{ id: '__synth__'+item.id, amount: expected, exchangeRate: item.exchangeRateAtTime || state.exchangeRate, synthetic: true, paidAt: item.paidAt || item.date }];
+    }
+  }
+
+  // Suma: si el pago tiene amount explícito úsalo, si no asume completo (legacy)
+  const totalPaid = payments.reduce((sum, p) => sum + (p.amount != null ? Number(p.amount) : expected), 0);
+  const remaining = Math.max(0, expected - totalPaid);
+  const percent = expected > 0 ? Math.min(100, Math.round((totalPaid / expected) * 100)) : 0;
+  let status;
+  if (totalPaid <= 0) status = 'PENDING';
+  else if (totalPaid >= expected) status = 'PAID';
+  else status = 'PARTIAL';
+
+  return { expected, totalPaid, remaining, percent, status, payments, kind };
+}
+
+// Devuelve { label, color } según el tipo (ingreso/gasto) y el estado del pago
+function getPaymentChip(item) {
+  const s = getPaymentSummary(item);
+  const isInc = item._kind === 'income' || (item.auto && !item.sourceExpenseId);
+  if (s.status === 'PAID')    return { label: isInc ? 'Cobrado' : 'Pagado',        color: 'bg-green-100 text-green-700' };
+  if (s.status === 'PARTIAL') return { label: `${s.percent}% ${isInc?'cobrado':'pagado'}`, color: 'bg-blue-100 text-blue-700' };
+  return                       { label: 'Pendiente',                                color: 'bg-amber-100 text-amber-800' };
+}
+
+function addPaymentToItem(item, amount, date, note) {
+  const rate = Number(state.exchangeRate) || 1200;
+  const base = {
+    id: uid(),
+    amount: Number(amount),
+    date: date || todayISO(),
+    paidAt: new Date().toISOString(),
+    paidBy: currentMemberId,
+    exchangeRate: rate,
+    exchangeRateSource: state.exchangeRateSource || 'manual',
+    note: note || '',
+  };
+
+  if (item.auto && item.sourceExpenseId) {
+    state.recurringExpensePayments.push({ ...base, expenseId: item.sourceExpenseId, month: item.month });
+  } else if (item.auto) {
+    state.recurringChargeLog.push({ ...base, projectId: item.projectId, month: item.month, chargedAt: base.paidAt, chargedBy: base.paidBy });
+  } else if (item._kind === 'income') {
+    // Si era 'PENDING' o nuevo, asegurar status
+    const real = state.incomes.find(x => x.id === item.id);
+    if (real) real.status = 'CONFIRMED';
+    state.incomePayments.push({ ...base, incomeId: item.id });
+  } else if (item._kind === 'expense') {
+    const real = state.expenses.find(x => x.id === item.id);
+    if (real) real.status = 'PAID';
+    state.expensePayments.push({ ...base, expenseId: item.id });
+  }
+  save();
+}
+
+function removePayment(kind, paymentId) {
+  if (paymentId.startsWith('__synth__')) {
+    // Sintético: viene del status binario. Limpiar el status del item.
+    const realId = paymentId.slice('__synth__'.length);
+    const inc = state.incomes.find(x => x.id === realId);
+    if (inc) { inc.status = 'PENDING'; inc.exchangeRateAtTime = null; inc.confirmedAt = null; }
+    const exp = state.expenses.find(x => x.id === realId);
+    if (exp) { exp.status = 'PENDING'; exp.exchangeRateAtTime = null; exp.paidAt = null; }
+  } else if (kind === 'income_recurring') {
+    state.recurringChargeLog = state.recurringChargeLog.filter(r => r.id !== paymentId);
+  } else if (kind === 'expense_recurring') {
+    state.recurringExpensePayments = state.recurringExpensePayments.filter(r => r.id !== paymentId);
+  } else if (kind === 'income') {
+    state.incomePayments = state.incomePayments.filter(r => r.id !== paymentId);
+  } else if (kind === 'expense') {
+    state.expensePayments = state.expensePayments.filter(r => r.id !== paymentId);
+  }
+  save();
+}
+
+let _currentPaymentsItem = null;
+function openPaymentsModal(item) {
+  _currentPaymentsItem = item;
+  renderPaymentsModal();
+}
+function renderPaymentsModal() {
+  const item = _currentPaymentsItem;
+  if (!item) return;
+  const s = getPaymentSummary(item);
+  const isInc = item._kind === 'income' || (item.auto && !item.sourceExpenseId);
+  const cur = item.currency || 'ARS';
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-3">
+        <div class="flex-1 min-w-0">
+          <h2 class="text-xl font-semibold truncate">${escapeHtml(item.concept)}</h2>
+          <p class="text-sm text-gray-500">${isInc ? 'Cobros' : 'Pagos'} registrados</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      <div class="grid grid-cols-3 gap-2 mb-4">
+        <div class="bg-gray-50 rounded-lg p-3">
+          <div class="text-[11px] text-gray-500 uppercase">Esperado</div>
+          <div class="font-semibold">${fmtAmount(s.expected, cur)}</div>
+        </div>
+        <div class="bg-green-50 rounded-lg p-3">
+          <div class="text-[11px] text-green-700 uppercase">${isInc?'Cobrado':'Pagado'}</div>
+          <div class="font-semibold text-green-700">${fmtAmount(s.totalPaid, cur)} <span class="text-xs font-normal">(${s.percent}%)</span></div>
+        </div>
+        <div class="bg-amber-50 rounded-lg p-3">
+          <div class="text-[11px] text-amber-800 uppercase">Falta</div>
+          <div class="font-semibold text-amber-800">${fmtAmount(s.remaining, cur)}</div>
+        </div>
+      </div>
+
+      <div class="h-2 bg-gray-100 rounded-full overflow-hidden mb-4">
+        <div class="h-full ${s.status==='PAID'?'bg-green-500':'bg-blue-500'} transition-all" style="width:${s.percent}%"></div>
+      </div>
+
+      <h3 class="text-xs uppercase tracking-wider text-gray-500 mb-2 font-semibold">Pagos (${s.payments.length})</h3>
+      <div class="space-y-1 mb-5 max-h-48 overflow-y-auto">
+        ${s.payments.length === 0 ? '<div class="text-sm text-gray-400 italic">Sin pagos todavía.</div>' : s.payments.map(p => `
+          <div class="flex items-center justify-between py-2 border-b border-gray-100 text-sm group">
+            <div class="flex-1 min-w-0">
+              <div class="font-medium">${fmtAmount(p.amount != null ? p.amount : s.expected, cur)}</div>
+              <div class="text-xs text-gray-500">${fmt(p.date || p.paidAt || p.chargedAt)}${p.note?` · ${escapeHtml(p.note)}`:''}${p.synthetic?' · <span class="italic">legacy</span>':''}</div>
+            </div>
+            <button onclick="removePayment('${s.kind}','${p.id}'); renderPaymentsModal()" class="opacity-0 group-hover:opacity-100 text-red-500 text-xs px-2 transition" title="Eliminar este pago">✕</button>
+          </div>
+        `).join('')}
+      </div>
+
+      <h3 class="text-xs uppercase tracking-wider text-gray-500 mb-2 font-semibold">Agregar pago</h3>
+      <form onsubmit="submitPayment(event)" class="space-y-3">
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Monto (${cur})</label>
+            <input id="paymentAmountInput" type="number" step="0.01" name="amount" class="input" required value="${s.remaining || ''}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Fecha</label>
+            <input type="date" name="date" class="input" value="${todayISO()}" />
+          </div>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Nota (opcional)</label>
+          <input type="text" name="note" class="input" placeholder="Ej: 1er adelanto, transferencia, etc." />
+        </div>
+
+        <div class="flex flex-wrap gap-1">
+          <button type="button" onclick="setPaymentAmount(${s.remaining})" class="chip bg-gray-100 text-gray-700 hover:bg-gray-200 cursor-pointer">Falta (${fmtAmount(s.remaining, cur)})</button>
+          <button type="button" onclick="setPaymentAmount(${s.expected * 0.5})" class="chip bg-gray-100 text-gray-700 hover:bg-gray-200 cursor-pointer">50%</button>
+          <button type="button" onclick="setPaymentAmount(${s.expected * 0.25})" class="chip bg-gray-100 text-gray-700 hover:bg-gray-200 cursor-pointer">25%</button>
+          <button type="button" onclick="setPaymentAmount(${s.expected})" class="chip bg-gray-100 text-gray-700 hover:bg-gray-200 cursor-pointer">Total</button>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-3 border-t border-gray-100">
+          <button type="button" class="btn-ghost" onclick="closeModal()">Cerrar</button>
+          <button type="submit" class="btn-primary">Agregar pago</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function setPaymentAmount(amount) {
+  const inp = document.getElementById('paymentAmountInput');
+  if (inp) inp.value = Number(amount).toFixed(2);
+}
+
+function submitPayment(e) {
+  e.preventDefault();
+  if (!_currentPaymentsItem) return;
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const amount = Number(data.amount);
+  if (!amount || isNaN(amount)) return alert('Monto inválido');
+  addPaymentToItem(_currentPaymentsItem, amount, data.date, data.note);
+  // Refrescamos el item con el nuevo state
+  if (_currentPaymentsItem.auto && _currentPaymentsItem.sourceExpenseId) {
+    // Recompute auto-expense
+    const fresh = getAutoExpenses(_currentPaymentsItem.month).find(x => x.sourceExpenseId === _currentPaymentsItem.sourceExpenseId);
+    if (fresh) _currentPaymentsItem = { ...fresh, _kind: 'expense' };
+  } else if (_currentPaymentsItem.auto) {
+    const fresh = getAutoIncomes(_currentPaymentsItem.month).find(x => x.projectId === _currentPaymentsItem.projectId);
+    if (fresh) _currentPaymentsItem = { ...fresh, _kind: 'income' };
+  }
+  renderPaymentsModal();
+  // re-render main view in background
+  render();
+}
+
 function reactivateRecurringExpense(expenseId) {
   const e = state.expenses.find(x => x.id === expenseId);
   if (!e) return;
@@ -2388,13 +2602,35 @@ function renderFinance() {
   const exp = [...autoExp, ...realExp];
 
   // Totals in base currency, separated by confirmed/pending
-  const isIncConfirmed = (i) => i.auto ? i.status === 'CHARGED' : i.status === 'CONFIRMED';
-  const isExpPaid = (e) => e.auto ? e.status === 'PAID' : (e.status || 'PAID') === 'PAID';
-  const incTotalConfirmed = inc.filter(isIncConfirmed).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
-  const incTotalPending = inc.filter(i => !isIncConfirmed(i)).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
+  // Mark _kind on items for summary lookup
+  const incWithKind = inc.map(i => ({ ...i, _kind: 'income' }));
+  const expWithKind = exp.map(e => ({ ...e, _kind: 'expense' }));
+
+  function paidPart(item) {
+    const s = getPaymentSummary(item);
+    const ratio = s.expected > 0 ? s.totalPaid / s.expected : 0;
+    return toBaseCurrencyForItem(item, baseCur) * ratio;
+  }
+  function pendingPart(item) {
+    const s = getPaymentSummary(item);
+    const ratio = s.expected > 0 ? s.remaining / s.expected : 1;
+    return toBaseCurrencyForItem(item, baseCur) * ratio;
+  }
+
+  const isIncConfirmed = (i) => {
+    const s = getPaymentSummary(i);
+    return s.status === 'PAID';
+  };
+  const isExpPaid = (e) => {
+    const s = getPaymentSummary(e);
+    return s.status === 'PAID';
+  };
+
+  const incTotalConfirmed = incWithKind.reduce((a, b) => a + paidPart(b), 0);
+  const incTotalPending = incWithKind.reduce((a, b) => a + pendingPart(b), 0);
   const incTotal = incTotalConfirmed + incTotalPending;
-  const expTotalPaid = exp.filter(isExpPaid).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
-  const expTotalPending = exp.filter(e => !isExpPaid(e)).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
+  const expTotalPaid = expWithKind.reduce((a, b) => a + paidPart(b), 0);
+  const expTotalPending = expWithKind.reduce((a, b) => a + pendingPart(b), 0);
   const expTotal = expTotalPaid + expTotalPending;
   const balance = incTotalConfirmed - expTotalPaid;
   const margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
@@ -2403,11 +2639,25 @@ function renderFinance() {
   const monthsInRange = monthsBetween(from, to);
   const showBreakdown = monthsInRange.length > 1;
   const monthlyData = showBreakdown ? monthsInRange.map(m => {
-    const realI = state.incomes.filter(i => i.date && i.date.startsWith(m) && (i.status || 'CONFIRMED') === 'CONFIRMED').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
-    const autoI = getAutoIncomes(m).filter(i => i.status === 'CHARGED').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
-    const realE = state.expenses.filter(x => x.date && x.date.startsWith(m) && (x.status || 'PAID') === 'PAID').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
-    const autoE = getAutoExpenses(m).filter(x => x.status === 'PAID').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
-    return { month: m, income: realI + autoI, expense: realE + autoE, balance: realI + autoI - realE - autoE };
+    const monthIncomes = [
+      ...state.incomes.filter(i => i.date && i.date.startsWith(m)).map(i => ({...i, _kind:'income'})),
+      ...getAutoIncomes(m),
+    ];
+    const monthExpenses = [
+      ...state.expenses.filter(x => x.date && x.date.startsWith(m)).map(e => ({...e, _kind:'expense'})),
+      ...getAutoExpenses(m),
+    ];
+    const i = monthIncomes.reduce((a, b) => {
+      const s = getPaymentSummary(b);
+      const ratio = s.expected > 0 ? s.totalPaid / s.expected : 0;
+      return a + toBaseCurrencyForItem(b, baseCur) * ratio;
+    }, 0);
+    const e = monthExpenses.reduce((a, b) => {
+      const s = getPaymentSummary(b);
+      const ratio = s.expected > 0 ? s.totalPaid / s.expected : 0;
+      return a + toBaseCurrencyForItem(b, baseCur) * ratio;
+    }, 0);
+    return { month: m, income: i, expense: e, balance: i - e };
   }) : [];
   const maxAbs = Math.max(1, ...monthlyData.map(d => Math.max(d.income, d.expense)));
 
@@ -2577,9 +2827,9 @@ function renderFinance() {
                   return items.map((it, idx) => {
                     const p = getProject(it.projectId);
                     const isInc = it._kind === 'income';
-                    const statusMap = isInc ? INCOME_STATUS : EXPENSE_STATUS;
-                    const status = statusMap[it.status] || statusMap[isInc ? 'CONFIRMED' : 'PAID'];
-                    const isPending = isInc ? !isIncConfirmed(it) : !isExpPaid(it);
+                    const status = getPaymentChip(it);
+                    const sum = getPaymentSummary(it);
+                    const isPending = sum.status !== 'PAID';
                     return `
                       <tr class="border-t border-gray-100 hover:bg-gray-50 group">
                         ${idx === 0 ? `<td class="px-3 md:px-5 py-3 align-top font-medium text-gray-700 bg-gray-50/50" rowspan="${items.length}">${monthLabel}</td>` : ''}
@@ -2603,12 +2853,7 @@ function renderFinance() {
                           ` : '—'}
                         </td>
                         <td class="px-3 py-2.5">
-                          ${it.auto && isInc
-                            ? `<button onclick="toggleMonthCharged('${it.projectId}','${it.month}')" class="chip ${status.color} cursor-pointer hover:opacity-80" title="${isPending ? 'Marcar como cobrado' : 'Marcar como pendiente'}">${status.label}</button>`
-                            : it.auto && !isInc
-                            ? `<button onclick="toggleExpenseMonthPaid('${it.sourceExpenseId}','${it.month}')" class="chip ${status.color} cursor-pointer hover:opacity-80" title="${isPending ? 'Marcar como pagado' : 'Marcar como pendiente'}">${status.label}</button>`
-                            : `<button onclick="toggleItemStatus('${it._kind}','${it.id}')" class="chip ${status.color} cursor-pointer hover:opacity-80">${status.label}</button>`
-                          }
+                          <button onclick='openPaymentsModal(${JSON.stringify(it).replace(/'/g, "&apos;")})' class="chip ${status.color} cursor-pointer hover:opacity-80" title="Gestionar pagos (parciales o total)">${status.label}</button>
                         </td>
                         <td class="px-3 md:px-5 py-2.5 text-right">
                           <div class="flex items-center justify-end gap-1">
