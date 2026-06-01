@@ -1668,7 +1668,9 @@ function insertTemplateVar(key) {
 }
 
 function getTemplatePreview(tpl) {
-  // Use sample data
+  // Sample: simulamos una mensualidad de US$20 a la cotización actual
+  const sampleAmountUSD = 20;
+  const rate = Number(state.exchangeRate) || 1200;
   const sample = {
     name: 'Juan Pérez',
     client: 'Juan Pérez',
@@ -1676,12 +1678,16 @@ function getTemplatePreview(tpl) {
     company: 'Inmobiliaria Pérez SA',
     role: 'Director',
     month: `${MONTH_NAMES_FULL[new Date().getMonth()]} ${new Date().getFullYear()}`,
-    amount: fmtAmount(280, state.defaultCurrency || 'ARS'),
+    amount:     fmtAmount(sampleAmountUSD, 'USD'),
+    amountARS:  fmtAmount(sampleAmountUSD * rate, 'ARS'),
+    amountUSD:  fmtAmount(sampleAmountUSD, 'USD'),
+    rate:       '$' + rate.toLocaleString('es-AR'),
     date: new Date().toLocaleDateString('es-AR', { day:'2-digit', month:'long', year:'numeric' }),
   };
   let out = tpl || '';
   Object.entries(sample).forEach(([k, v]) => {
-    out = out.replace(new RegExp(`\\{${k}\\}`, 'g'), v);
+    // Función como reemplazo para evitar interpretación de $
+    out = out.replace(new RegExp(`\\{${k}\\}`, 'g'), () => String(v ?? ''));
   });
   return out || '(plantilla vacía)';
 }
@@ -2145,7 +2151,8 @@ function buildPaymentMessage(income) {
   if (!p) return '';
   let msg = state.paymentMessageTemplate || '';
   PAYMENT_VARS.forEach(v => {
-    msg = msg.replace(new RegExp(`\\{${v.key}\\}`, 'g'), v.resolve(p, income));
+    // Función como reemplazo: evita interpretar $ como backreference
+    msg = msg.replace(new RegExp(`\\{${v.key}\\}`, 'g'), () => String(v.resolve(p, income) ?? ''));
   });
   return msg;
 }
