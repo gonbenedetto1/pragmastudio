@@ -1998,36 +1998,23 @@ function getAutoExpensesInRange(from, to) {
 }
 
 // ---- Carry-over (arrastre) ----
-// Items con saldo pendiente desde meses anteriores se muestran en el mes vigente
+// Sólo se arrastran INGRESOS con cobro PARCIAL (algo cobrado, falta resto).
+// Gastos fijos y pendientes 100% quedan en su mes original.
 function getCarryOversForMonth(viewedMonth) {
   const incomes = [];
-  const expenses = [];
 
-  // Manual incomes anteriores con saldo
+  // Manual incomes anteriores con saldo parcial
   state.incomes.forEach(i => {
     if (!i.date) return;
     const m = i.date.slice(0, 7);
     if (m >= viewedMonth) return;
     const tmp = { ...i, _kind: 'income' };
     const sum = getPaymentSummary(tmp);
-    if (sum.remaining > 0) {
-      incomes.push({ ...i, _kind: 'income', _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
-    }
+    if (sum.status !== 'PARTIAL') return;
+    incomes.push({ ...i, _kind: 'income', _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
   });
 
-  // Manual expenses anteriores con saldo
-  state.expenses.forEach(e => {
-    if (!e.date) return;
-    const m = e.date.slice(0, 7);
-    if (m >= viewedMonth) return;
-    const tmp = { ...e, _kind: 'expense' };
-    const sum = getPaymentSummary(tmp);
-    if (sum.remaining > 0) {
-      expenses.push({ ...e, _kind: 'expense', _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
-    }
-  });
-
-  // Recurring incomes (mensualidades de proyectos) de meses anteriores con saldo
+  // Recurring incomes (mensualidades de proyectos) parciales
   state.projects.forEach(p => {
     if (p.status !== 'ACTIVE_RECURRING' || !p.monthlyFee) return;
     const start = (p.startDate || '').slice(0, 7);
@@ -2039,33 +2026,12 @@ function getCarryOversForMonth(viewedMonth) {
       const autoInc = getAutoIncomes(m).find(x => x.projectId === p.id);
       if (!autoInc) return;
       const sum = getPaymentSummary(autoInc);
-      if (sum.remaining > 0) {
-        incomes.push({ ...autoInc, _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
-      }
+      if (sum.status !== 'PARTIAL') return;
+      incomes.push({ ...autoInc, _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
     });
   });
 
-  // Recurring expenses (fijos) de meses anteriores con saldo
-  state.expenses.forEach(e => {
-    if (e.category !== 'FIXED') return;
-    if (e.recurring === false) return;
-    const start = (e.date || '').slice(0, 7);
-    if (!start) return;
-    const end = (e.recurringEndDate || '').slice(0, 7);
-    monthsBetween(start + '-01', viewedMonth + '-01').forEach(m => {
-      if (m >= viewedMonth) return;
-      if (m <= start) return; // El original ya se cuenta como item manual del mes start
-      if (end && m > end) return;
-      const autoExp = getAutoExpenses(m).find(x => x.sourceExpenseId === e.id);
-      if (!autoExp) return;
-      const sum = getPaymentSummary(autoExp);
-      if (sum.remaining > 0) {
-        expenses.push({ ...autoExp, _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
-      }
-    });
-  });
-
-  return { incomes, expenses };
+  return { incomes, expenses: [] };
 }
 
 function toggleExpenseMonthPaid(expenseId, month) {
