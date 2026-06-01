@@ -2183,6 +2183,10 @@ function openPaymentMessageModal(income) {
   const p = getProject(income.projectId);
   const phone = (p.contactPhone || '').replace(/[^\d]/g, '');
   const msg = buildPaymentMessage(income);
+  const itemCurrency = income.currency || 'ARS';
+  const base = state.defaultCurrency || 'ARS';
+  const rate = Number(state.exchangeRate) || 1200;
+  const showCurrencyWarning = itemCurrency === 'ARS' && Number(income.amount) > 0 && Number(income.amount) <= 200;
 
   openModal(`
     <div class="p-6">
@@ -2192,11 +2196,31 @@ function openPaymentMessageModal(income) {
         </span>
         <h2 class="text-xl font-semibold">Recordatorio de pago</h2>
       </div>
-      <p class="text-sm text-gray-500 mb-4">
+      <p class="text-sm text-gray-500 mb-3">
         Para <b>${escapeHtml(p.contactName || p.name)}</b>
         · ${escapeHtml(p.contactPhone)}
-        · ${escapeHtml(p.name)}
       </p>
+
+      <div class="bg-gray-50 rounded-lg p-3 mb-4 flex items-center justify-between text-sm">
+        <div>
+          <div class="text-xs text-gray-500">Mensualidad original</div>
+          <div class="font-semibold">${fmtAmount(income.amount, itemCurrency)} <span class="text-xs text-gray-500 font-normal">${itemCurrency}</span></div>
+        </div>
+        ${itemCurrency !== base ? `
+          <div class="text-right">
+            <div class="text-xs text-gray-500">Al cambio actual</div>
+            <div class="font-semibold">${fmtAmount(convertAt(income.amount, itemCurrency, base, rate), base)} <span class="text-xs text-gray-500 font-normal">${base}</span></div>
+          </div>
+        ` : ''}
+        <button onclick="closeModal(); openProjectModal('${p.id}')" class="ml-2 text-xs text-blue-600 hover:underline whitespace-nowrap">Cambiar</button>
+      </div>
+
+      ${showCurrencyWarning ? `
+        <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-900">
+          <b>¿Está bien la moneda?</b> El monto es ${fmtAmount(income.amount, itemCurrency)} en <b>${itemCurrency}</b>. Si en realidad cobrás <b>US$${income.amount}</b>, editá el proyecto y cambiá la moneda a USD.
+          <button onclick="closeModal(); openProjectModal('${p.id}')" class="block mt-2 text-blue-700 underline">Editar proyecto →</button>
+        </div>
+      ` : ''}
 
       <label class="text-xs text-gray-500 font-semibold">Mensaje</label>
       <textarea id="paymentMsgText" class="input mt-1" rows="10" style="white-space:pre-wrap">${escapeHtml(msg)}</textarea>
@@ -3033,13 +3057,20 @@ function openProjectModal(id) {
           </div>
           <div>
             <label class="text-xs text-gray-500">Mensualidad</label>
-            <div class="flex gap-1">
+            <div class="flex gap-2 items-stretch">
               <input type="number" name="monthlyFee" class="input flex-1" value="${p.monthlyFee || ''}" placeholder="0" />
-              <select name="monthlyFeeCurrency" class="input w-20">
-                <option value="ARS" ${(p.monthlyFeeCurrency||'ARS')==='ARS'?'selected':''}>ARS</option>
-                <option value="USD" ${p.monthlyFeeCurrency==='USD'?'selected':''}>USD</option>
-              </select>
+              <div class="flex gap-1 bg-gray-100 rounded-lg p-1">
+                <label class="cursor-pointer">
+                  <input type="radio" name="monthlyFeeCurrency" value="ARS" ${(p.monthlyFeeCurrency||'ARS')==='ARS'?'checked':''} class="peer sr-only" />
+                  <span class="px-3 py-1.5 rounded-md text-sm font-medium block peer-checked:bg-white peer-checked:shadow-sm text-gray-600 peer-checked:text-black transition">ARS</span>
+                </label>
+                <label class="cursor-pointer">
+                  <input type="radio" name="monthlyFeeCurrency" value="USD" ${p.monthlyFeeCurrency==='USD'?'checked':''} class="peer sr-only" />
+                  <span class="px-3 py-1.5 rounded-md text-sm font-medium block peer-checked:bg-white peer-checked:shadow-sm text-gray-600 peer-checked:text-black transition">USD</span>
+                </label>
+              </div>
             </div>
+            <p class="text-[11px] text-gray-400 mt-1">⚠ Si cobrás en dólares, elegí USD acá. Si no, los mensajes saldrán mal.</p>
           </div>
           <div class="col-span-2">
             <label class="text-xs text-gray-500">Color</label>
