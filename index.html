@@ -195,7 +195,7 @@ const DEFAULT_STATE = {
   emailConfig: { enabled: false, serviceId: '', templateId: '', publicKey: '' },
   recurringChargeLog: [],  // { id, projectId, month, chargedAt, chargedBy }
   pragmaPhone: '',
-  paymentMessageTemplate: 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount}\n\n¡Gracias!\nPragma Studio',
+  paymentMessageTemplate: 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount} (≈ {amountARS} al cambio de hoy, cotización USD {rate})\n\n¡Gracias!\nPragma Studio',
   defaultCurrency: 'ARS',
   exchangeRate: 1200,             // ARS por USD
   exchangeRateSource: 'manual',   // 'manual' | 'blue' | 'oficial' | 'mep' | 'cripto' | 'tarjeta'
@@ -1894,14 +1894,19 @@ function toggleMonthCharged(projectId, month) {
   if (isMonthCharged(projectId, month)) {
     state.recurringChargeLog = state.recurringChargeLog.filter(r => !(r.projectId === projectId && r.month === month));
   } else {
+    const rate = Number(state.exchangeRate) || 1200;
     state.recurringChargeLog.push({
       id: uid(),
       projectId,
       month,
       chargedAt: new Date().toISOString(),
       chargedBy: currentMemberId,
+      exchangeRate: rate,
+      exchangeRateSource: state.exchangeRateSource || 'manual',
     });
-    showToast('Pago marcado como cobrado', 'success');
+    const p = getProject(projectId);
+    const inAR = (p && p.monthlyFeeCurrency === 'USD') ? ` · cotización $${rate.toLocaleString('es-AR')}` : '';
+    showToast(`Pago marcado como cobrado${inAR}`, 'success');
   }
   save(); render();
 }
@@ -1955,6 +1960,31 @@ function toBaseCurrency(amount, fromCurrency, toCurrency) {
   if (from === 'USD' && to === 'ARS') return Number(amount) * rate;
   if (from === 'ARS' && to === 'USD') return Number(amount) / rate;
   return Number(amount);
+}
+
+function convertAt(amount, fromCurrency, toCurrency, rate) {
+  const from = fromCurrency || 'ARS';
+  const to = toCurrency || state.defaultCurrency || 'ARS';
+  if (from === to) return Number(amount);
+  const r = Number(rate) || 1200;
+  if (from === 'USD' && to === 'ARS') return Number(amount) * r;
+  if (from === 'ARS' && to === 'USD') return Number(amount) / r;
+  return Number(amount);
+}
+
+// Cotización efectiva del item: la "congelada" si fue confirmado, o la actual si está pendiente
+function getEffectiveRate(item) {
+  if (item.auto) {
+    const record = getChargeRecord(item.projectId, item.month);
+    if (record && record.exchangeRate) return Number(record.exchangeRate);
+  } else if (item.exchangeRateAtTime) {
+    return Number(item.exchangeRateAtTime);
+  }
+  return Number(state.exchangeRate) || 1200;
+}
+
+function toBaseCurrencyForItem(item, toCurrency) {
+  return convertAt(item.amount, item.currency, toCurrency, getEffectiveRate(item));
 }
 
 // ---- USD exchange rate ----
@@ -2094,7 +2124,19 @@ const PAYMENT_VARS = [
       const [y, mm] = (i.month || i.date || '').split('-');
       return mm ? `${MONTH_NAMES_FULL[Number(mm)-1]} ${y}` : '';
     } },
-  { key: 'amount',  label: 'Monto',           resolve: (p, i) => fmtAmount(i.amount, i.currency) },
+  { key: 'amount',     label: 'Monto original',   resolve: (p, i) => fmtAmount(i.amount, i.currency) },
+  { key: 'amountARS',  label: 'Monto en ARS hoy', resolve: (p, i) => {
+      // Para cobros: siempre usa cotización del momento (actual)
+      if (i.currency === 'ARS') return fmtAmount(i.amount, 'ARS');
+      const rate = Number(state.exchangeRate) || 1200;
+      return fmtAmount(Number(i.amount) * rate, 'ARS');
+    } },
+  { key: 'amountUSD',  label: 'Monto en USD hoy', resolve: (p, i) => {
+      if (i.currency === 'USD') return fmtAmount(i.amount, 'USD');
+      const rate = Number(state.exchangeRate) || 1200;
+      return fmtAmount(Number(i.amount) / rate, 'USD');
+    } },
+  { key: 'rate',    label: 'Cotización USD',  resolve: () => '$' + (Number(state.exchangeRate)||1200).toLocaleString('es-AR') },
   { key: 'date',    label: 'Fecha hoy',       resolve: () => new Date().toLocaleDateString('es-AR', { day:'2-digit', month:'long', year:'numeric' }) },
 ];
 
@@ -2203,11 +2245,11 @@ function renderFinance() {
   // Totals in base currency, separated by confirmed/pending
   const isIncConfirmed = (i) => i.auto ? i.status === 'CHARGED' : i.status === 'CONFIRMED';
   const isExpPaid = (e) => e.status === 'PAID';
-  const incTotalConfirmed = inc.filter(isIncConfirmed).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
-  const incTotalPending = inc.filter(i => !isIncConfirmed(i)).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+  const incTotalConfirmed = inc.filter(isIncConfirmed).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
+  const incTotalPending = inc.filter(i => !isIncConfirmed(i)).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
   const incTotal = incTotalConfirmed + incTotalPending;
-  const expTotalPaid = exp.filter(isExpPaid).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
-  const expTotalPending = exp.filter(e => !isExpPaid(e)).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+  const expTotalPaid = exp.filter(isExpPaid).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
+  const expTotalPending = exp.filter(e => !isExpPaid(e)).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
   const expTotal = expTotalPaid + expTotalPending;
   const balance = incTotalConfirmed - expTotalPaid;
   const margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
@@ -2216,9 +2258,9 @@ function renderFinance() {
   const monthsInRange = monthsBetween(from, to);
   const showBreakdown = monthsInRange.length > 1;
   const monthlyData = showBreakdown ? monthsInRange.map(m => {
-    const realI = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
-    const autoI = getAutoIncomes(m).filter(i => i.status === 'CHARGED').reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
-    const e = state.expenses.filter(x => x.date && x.date.startsWith(m) && (x.status || 'PAID') === 'PAID').reduce((a,b) => a + toBaseCurrency(b.amount, b.currency, baseCur), 0);
+    const realI = state.incomes.filter(i => i.date && i.date.startsWith(m) && (i.status || 'CONFIRMED') === 'CONFIRMED').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
+    const autoI = getAutoIncomes(m).filter(i => i.status === 'CHARGED').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
+    const e = state.expenses.filter(x => x.date && x.date.startsWith(m) && (x.status || 'PAID') === 'PAID').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
     return { month: m, income: realI + autoI, expense: e, balance: realI + autoI - e };
   }) : [];
   const maxAbs = Math.max(1, ...monthlyData.map(d => Math.max(d.income, d.expense)));
@@ -2403,10 +2445,16 @@ function renderFinance() {
                           ${p ? `<div class="text-xs text-gray-500 mt-0.5">${escapeHtml(p.name)}${it.category && !isInc ? ' · ' + EXPENSE_CAT[it.category] : ''}</div>` : (it.category && !isInc ? `<div class="text-xs text-gray-500 mt-0.5">${EXPENSE_CAT[it.category]}</div>` : '')}
                         </td>
                         <td class="px-3 py-2.5 text-right ${isInc ? 'text-green-700 font-semibold' : 'text-gray-300'}">
-                          ${isInc ? fmtAmount(it.amount, it.currency) : '—'}
+                          ${isInc ? `
+                            ${fmtAmount(it.amount, it.currency)}
+                            ${it.currency !== baseCur && getEffectiveRate(it) ? `<div class="text-[10px] text-gray-400 font-normal" title="Cotización al momento del cobro">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} ${(it.auto?isMonthCharged(it.projectId,it.month):isIncConfirmed(it))?'🔒':''} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
+                          ` : '—'}
                         </td>
                         <td class="px-3 py-2.5 text-right ${!isInc ? 'text-red-600 font-semibold' : 'text-gray-300'}">
-                          ${!isInc ? fmtAmount(it.amount, it.currency) : '—'}
+                          ${!isInc ? `
+                            ${fmtAmount(it.amount, it.currency)}
+                            ${it.currency !== baseCur && getEffectiveRate(it) ? `<div class="text-[10px] text-gray-400 font-normal">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} ${isExpPaid(it)?'🔒':''} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
+                          ` : '—'}
                         </td>
                         <td class="px-3 py-2.5">
                           ${it.auto
@@ -2461,11 +2509,29 @@ function toggleItemStatus(kind, id) {
   if (kind === 'income') {
     const i = state.incomes.find(x => x.id === id);
     if (!i) return;
-    i.status = (i.status === 'CONFIRMED' || !i.status) ? 'PENDING' : 'CONFIRMED';
+    const goingToConfirmed = !(i.status === 'CONFIRMED' || !i.status);
+    i.status = goingToConfirmed ? 'CONFIRMED' : 'PENDING';
+    if (goingToConfirmed) {
+      i.exchangeRateAtTime = Number(state.exchangeRate) || 1200;
+      i.exchangeRateSource = state.exchangeRateSource || 'manual';
+      i.confirmedAt = new Date().toISOString();
+    } else {
+      i.exchangeRateAtTime = null;
+      i.confirmedAt = null;
+    }
   } else {
     const e = state.expenses.find(x => x.id === id);
     if (!e) return;
-    e.status = (e.status === 'PAID' || !e.status) ? 'PENDING' : 'PAID';
+    const goingToPaid = !(e.status === 'PAID' || !e.status);
+    e.status = goingToPaid ? 'PAID' : 'PENDING';
+    if (goingToPaid) {
+      e.exchangeRateAtTime = Number(state.exchangeRate) || 1200;
+      e.exchangeRateSource = state.exchangeRateSource || 'manual';
+      e.paidAt = new Date().toISOString();
+    } else {
+      e.exchangeRateAtTime = null;
+      e.paidAt = null;
+    }
   }
   save(); render();
 }
@@ -3152,8 +3218,29 @@ function saveIncome(e) {
   e.preventDefault();
   const data = Object.fromEntries(new FormData(e.target).entries());
   data.amount = Number(data.amount);
-  if (data.id) Object.assign(state.incomes.find(x => x.id === data.id), data);
-  else state.incomes.push({ ...data, id: uid() });
+  if (data.id) {
+    const existing = state.incomes.find(x => x.id === data.id);
+    const wasConfirmed = (existing.status || 'CONFIRMED') === 'CONFIRMED';
+    const willBeConfirmed = (data.status || 'CONFIRMED') === 'CONFIRMED';
+    if (willBeConfirmed && !wasConfirmed) {
+      data.exchangeRateAtTime = Number(state.exchangeRate) || 1200;
+      data.exchangeRateSource = state.exchangeRateSource || 'manual';
+      data.confirmedAt = new Date().toISOString();
+    } else if (!willBeConfirmed) {
+      data.exchangeRateAtTime = null;
+      data.confirmedAt = null;
+    } else {
+      data.exchangeRateAtTime = existing.exchangeRateAtTime || null;
+    }
+    Object.assign(existing, data);
+  } else {
+    if ((data.status || 'CONFIRMED') === 'CONFIRMED') {
+      data.exchangeRateAtTime = Number(state.exchangeRate) || 1200;
+      data.exchangeRateSource = state.exchangeRateSource || 'manual';
+      data.confirmedAt = new Date().toISOString();
+    }
+    state.incomes.push({ ...data, id: uid() });
+  }
   save(); closeModal(); render();
 }
 function deleteIncome(id) {
@@ -3219,8 +3306,29 @@ function saveExpense(e) {
   e.preventDefault();
   const data = Object.fromEntries(new FormData(e.target).entries());
   data.amount = Number(data.amount);
-  if (data.id) Object.assign(state.expenses.find(x => x.id === data.id), data);
-  else state.expenses.push({ ...data, id: uid() });
+  if (data.id) {
+    const existing = state.expenses.find(x => x.id === data.id);
+    const wasPaid = (existing.status || 'PAID') === 'PAID';
+    const willBePaid = (data.status || 'PAID') === 'PAID';
+    if (willBePaid && !wasPaid) {
+      data.exchangeRateAtTime = Number(state.exchangeRate) || 1200;
+      data.exchangeRateSource = state.exchangeRateSource || 'manual';
+      data.paidAt = new Date().toISOString();
+    } else if (!willBePaid) {
+      data.exchangeRateAtTime = null;
+      data.paidAt = null;
+    } else {
+      data.exchangeRateAtTime = existing.exchangeRateAtTime || null;
+    }
+    Object.assign(existing, data);
+  } else {
+    if ((data.status || 'PAID') === 'PAID') {
+      data.exchangeRateAtTime = Number(state.exchangeRate) || 1200;
+      data.exchangeRateSource = state.exchangeRateSource || 'manual';
+      data.paidAt = new Date().toISOString();
+    }
+    state.expenses.push({ ...data, id: uid() });
+  }
   save(); closeModal(); render();
 }
 function deleteExpense(id) {
