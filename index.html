@@ -1997,6 +1997,77 @@ function getAutoExpensesInRange(from, to) {
   return monthsBetween(fromM + '-01', toM + '-01').flatMap(m => getAutoExpenses(m));
 }
 
+// ---- Carry-over (arrastre) ----
+// Items con saldo pendiente desde meses anteriores se muestran en el mes vigente
+function getCarryOversForMonth(viewedMonth) {
+  const incomes = [];
+  const expenses = [];
+
+  // Manual incomes anteriores con saldo
+  state.incomes.forEach(i => {
+    if (!i.date) return;
+    const m = i.date.slice(0, 7);
+    if (m >= viewedMonth) return;
+    const tmp = { ...i, _kind: 'income' };
+    const sum = getPaymentSummary(tmp);
+    if (sum.remaining > 0) {
+      incomes.push({ ...i, _kind: 'income', _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
+    }
+  });
+
+  // Manual expenses anteriores con saldo
+  state.expenses.forEach(e => {
+    if (!e.date) return;
+    const m = e.date.slice(0, 7);
+    if (m >= viewedMonth) return;
+    const tmp = { ...e, _kind: 'expense' };
+    const sum = getPaymentSummary(tmp);
+    if (sum.remaining > 0) {
+      expenses.push({ ...e, _kind: 'expense', _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
+    }
+  });
+
+  // Recurring incomes (mensualidades de proyectos) de meses anteriores con saldo
+  state.projects.forEach(p => {
+    if (p.status !== 'ACTIVE_RECURRING' || !p.monthlyFee) return;
+    const start = (p.startDate || '').slice(0, 7);
+    if (!start) return;
+    const end = (p.endDate || '').slice(0, 7);
+    monthsBetween(start + '-01', viewedMonth + '-01').forEach(m => {
+      if (m >= viewedMonth) return;
+      if (end && m > end) return;
+      const autoInc = getAutoIncomes(m).find(x => x.projectId === p.id);
+      if (!autoInc) return;
+      const sum = getPaymentSummary(autoInc);
+      if (sum.remaining > 0) {
+        incomes.push({ ...autoInc, _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
+      }
+    });
+  });
+
+  // Recurring expenses (fijos) de meses anteriores con saldo
+  state.expenses.forEach(e => {
+    if (e.category !== 'FIXED') return;
+    if (e.recurring === false) return;
+    const start = (e.date || '').slice(0, 7);
+    if (!start) return;
+    const end = (e.recurringEndDate || '').slice(0, 7);
+    monthsBetween(start + '-01', viewedMonth + '-01').forEach(m => {
+      if (m >= viewedMonth) return;
+      if (m <= start) return; // El original ya se cuenta como item manual del mes start
+      if (end && m > end) return;
+      const autoExp = getAutoExpenses(m).find(x => x.sourceExpenseId === e.id);
+      if (!autoExp) return;
+      const sum = getPaymentSummary(autoExp);
+      if (sum.remaining > 0) {
+        expenses.push({ ...autoExp, _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
+      }
+    });
+  });
+
+  return { incomes, expenses };
+}
+
 function toggleExpenseMonthPaid(expenseId, month) {
   if (isExpenseMonthPaid(expenseId, month)) {
     state.recurringExpensePayments = state.recurringExpensePayments.filter(r => !(r.expenseId === expenseId && r.month === month));
@@ -2595,11 +2666,14 @@ function renderFinance() {
   const realInc = state.incomes.filter(i => i.date && inRange(i.date, from, to))
     .map(i => ({ ...i, status: i.status || 'CONFIRMED' }));
   const autoInc = getAutoIncomesInRange(from, to);
-  const inc = [...autoInc, ...realInc];
   const realExp = state.expenses.filter(e => e.date && inRange(e.date, from, to))
     .map(e => ({ ...e, status: e.status || 'PAID' }));
   const autoExp = getAutoExpensesInRange(from, to);
-  const exp = [...autoExp, ...realExp];
+
+  // Arrastres sólo en vista de Mes individual
+  const carryOvers = financeMode === 'month' ? getCarryOversForMonth(financeMonth) : { incomes: [], expenses: [] };
+  const inc = [...autoInc, ...realInc, ...carryOvers.incomes];
+  const exp = [...autoExp, ...realExp, ...carryOvers.expenses];
 
   // Totals in base currency, separated by confirmed/pending
   // Mark _kind on items for summary lookup
@@ -2607,6 +2681,7 @@ function renderFinance() {
   const expWithKind = exp.map(e => ({ ...e, _kind: 'expense' }));
 
   function paidPart(item) {
+    if (item._carryOver) return 0; // Ya se contó en su mes original
     const s = getPaymentSummary(item);
     const ratio = s.expected > 0 ? s.totalPaid / s.expected : 0;
     return toBaseCurrencyForItem(item, baseCur) * ratio;
@@ -2664,17 +2739,19 @@ function renderFinance() {
   // Group all items by month for the unified table
   const itemsByMonth = {};
   inc.forEach(i => {
-    const m = (i.month || i.date || '').slice(0,7);
+    // Arrastres se muestran en el mes vigente, no en el original
+    const m = i._carryOver ? financeMonth : (i.month || i.date || '').slice(0,7);
     if (!itemsByMonth[m]) itemsByMonth[m] = [];
     itemsByMonth[m].push({ ...i, _kind: 'income' });
   });
   exp.forEach(e => {
-    const m = (e.date || '').slice(0,7);
+    const m = e._carryOver ? financeMonth : (e.date || '').slice(0,7);
     if (!itemsByMonth[m]) itemsByMonth[m] = [];
     itemsByMonth[m].push({ ...e, _kind: 'expense' });
   });
   Object.keys(itemsByMonth).forEach(m => {
-    itemsByMonth[m].sort((a,b) => (b.auto?1:0) - (a.auto?1:0) || (a.concept||'').localeCompare(b.concept||''));
+    // Arrastres primero, luego AUTO, luego manuales
+    itemsByMonth[m].sort((a,b) => (b._carryOver?1:0) - (a._carryOver?1:0) || (b.auto?1:0) - (a.auto?1:0) || (a.concept||'').localeCompare(b.concept||''));
   });
   const sortedMonths = Object.keys(itemsByMonth).sort();
 
@@ -2836,20 +2913,25 @@ function renderFinance() {
                         <td class="px-3 py-2.5">
                           <div class="flex items-center gap-2 flex-wrap">
                             ${it.auto ? '<span class="text-[10px] chip bg-blue-100 text-blue-700">AUTO</span>' : ''}
+                            ${it._carryOver ? `<span class="text-[10px] chip bg-amber-100 text-amber-800" title="Arrastrado desde un mes anterior por estar pendiente">ARRASTRE ${MONTH_NAMES_SHORT[Number(it._carryOverFrom.split('-')[1])-1]} ${it._carryOverFrom.split('-')[0].slice(2)}</span>` : ''}
                             <span class="font-medium truncate">${escapeHtml(it.concept)}</span>
                           </div>
                           ${p ? `<div class="text-xs text-gray-500 mt-0.5">${escapeHtml(p.name)}${it.category && !isInc ? ' · ' + EXPENSE_CAT[it.category] : ''}</div>` : (it.category && !isInc ? `<div class="text-xs text-gray-500 mt-0.5">${EXPENSE_CAT[it.category]}</div>` : '')}
                         </td>
                         <td class="px-3 py-2.5 text-right ${isInc ? 'text-green-700 font-semibold' : 'text-gray-300'}">
                           ${isInc ? `
-                            ${fmtAmount(it.amount, it.currency)}
-                            ${it.currency !== baseCur && getEffectiveRate(it) ? `<div class="text-[10px] text-gray-400 font-normal" title="Cotización al momento del cobro">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} ${(it.auto?isMonthCharged(it.projectId,it.month):isIncConfirmed(it))?'🔒':''} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
+                            ${it._carryOver
+                              ? `${fmtAmount(it._carryOverRemaining, it.currency)} <span class="text-[10px] text-gray-400 font-normal">pendiente</span>`
+                              : fmtAmount(it.amount, it.currency)}
+                            ${it.currency !== baseCur && getEffectiveRate(it) && !it._carryOver ? `<div class="text-[10px] text-gray-400 font-normal" title="Cotización al momento del cobro">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} ${(it.auto?isMonthCharged(it.projectId,it.month):isIncConfirmed(it))?'🔒':''} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
                           ` : '—'}
                         </td>
                         <td class="px-3 py-2.5 text-right ${!isInc ? 'text-red-600 font-semibold' : 'text-gray-300'}">
                           ${!isInc ? `
-                            ${fmtAmount(it.amount, it.currency)}
-                            ${it.currency !== baseCur && getEffectiveRate(it) ? `<div class="text-[10px] text-gray-400 font-normal">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} ${isExpPaid(it)?'🔒':''} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
+                            ${it._carryOver
+                              ? `${fmtAmount(it._carryOverRemaining, it.currency)} <span class="text-[10px] text-gray-400 font-normal">pendiente</span>`
+                              : fmtAmount(it.amount, it.currency)}
+                            ${it.currency !== baseCur && getEffectiveRate(it) && !it._carryOver ? `<div class="text-[10px] text-gray-400 font-normal">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} ${isExpPaid(it)?'🔒':''} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
                           ` : '—'}
                         </td>
                         <td class="px-3 py-2.5">
