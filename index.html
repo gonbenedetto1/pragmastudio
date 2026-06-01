@@ -193,7 +193,8 @@ const DEFAULT_STATE = {
   documents: [],      // { id, title, url, category, description, createdAt }
   resources: [],      // { id, title, url, category, description, createdAt }
   emailConfig: { enabled: false, serviceId: '', templateId: '', publicKey: '' },
-  recurringChargeLog: [],  // { id, projectId, month, chargedAt, chargedBy }
+  recurringChargeLog: [],         // { id, projectId, month, chargedAt, chargedBy }
+  recurringExpensePayments: [],   // { id, expenseId, month, paidAt, paidBy, exchangeRate }
   pragmaPhone: '',
   paymentMessageTemplate: 'Hola {name}! 👋\n\nTe paso el recordatorio del pago mensual del proyecto *{project}* correspondiente a {month}.\n\nMonto: {amount}\n\n¡Gracias!\nPragma Studio',
   defaultCurrency: 'ARS',
@@ -1951,6 +1952,86 @@ function getAutoIncomesInRange(from, to) {
   return monthsBetween(fromM + '-01', toM + '-01').flatMap(m => getAutoIncomes(m));
 }
 
+// ---- Auto expenses (gastos fijos recurrentes) ----
+function getExpensePaymentRecord(expenseId, month) {
+  return (state.recurringExpensePayments || []).find(r => r.expenseId === expenseId && r.month === month);
+}
+function isExpenseMonthPaid(expenseId, month) {
+  return !!getExpensePaymentRecord(expenseId, month);
+}
+
+function getAutoExpenses(month) {
+  // Genera gastos virtuales para meses posteriores a partir de gastos FIXED con recurring=true
+  const out = [];
+  state.expenses.forEach(e => {
+    if (e.category !== 'FIXED') return;
+    if (e.recurring === false) return;
+    const expenseMonth = (e.date || '').slice(0, 7);
+    if (!expenseMonth || expenseMonth >= month) return;        // sólo en meses POSTERIORES al original
+    const endMonth = (e.recurringEndDate || '').slice(0, 7);
+    if (endMonth && endMonth < month) return;                  // ya fue dado de baja
+    const payment = getExpensePaymentRecord(e.id, month);
+    out.push({
+      id: `auto-exp-${e.id}-${month}`,
+      sourceExpenseId: e.id,
+      amount: Number(e.amount),
+      currency: e.currency || 'ARS',
+      date: month + '-01',
+      month,
+      concept: e.concept,
+      category: e.category,
+      projectId: e.projectId,
+      auto: true,
+      status: payment ? 'PAID' : 'PENDING',
+      exchangeRateAtTime: payment?.exchangeRate || null,
+    });
+  });
+  return out;
+}
+
+function getAutoExpensesInRange(from, to) {
+  const fromM = from.slice(0,7);
+  const toM = to.slice(0,7);
+  return monthsBetween(fromM + '-01', toM + '-01').flatMap(m => getAutoExpenses(m));
+}
+
+function toggleExpenseMonthPaid(expenseId, month) {
+  if (isExpenseMonthPaid(expenseId, month)) {
+    state.recurringExpensePayments = state.recurringExpensePayments.filter(r => !(r.expenseId === expenseId && r.month === month));
+  } else {
+    state.recurringExpensePayments.push({
+      id: uid(),
+      expenseId,
+      month,
+      paidAt: new Date().toISOString(),
+      paidBy: currentMemberId,
+      exchangeRate: Number(state.exchangeRate) || 1200,
+      exchangeRateSource: state.exchangeRateSource || 'manual',
+    });
+    showToast('Gasto marcado como pagado', 'success');
+  }
+  save(); render();
+}
+
+function cancelRecurringExpense(expenseId) {
+  const e = state.expenses.find(x => x.id === expenseId);
+  if (!e) return;
+  if (!confirm(`¿Dar de baja el gasto fijo "${e.concept}"? Dejará de aparecer desde el próximo mes. Lo histórico se mantiene.`)) return;
+  const today = new Date();
+  const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  e.recurringEndDate = lastDayOfMonth.toISOString().slice(0, 10);
+  save(); render();
+  showToast('Gasto fijo dado de baja desde el próximo mes', 'success');
+}
+
+function reactivateRecurringExpense(expenseId) {
+  const e = state.expenses.find(x => x.id === expenseId);
+  if (!e) return;
+  e.recurringEndDate = null;
+  save(); render();
+  showToast('Gasto fijo reactivado', 'success');
+}
+
 function inRange(date, from, to) {
   return date >= from && date <= to;
 }
@@ -1984,8 +2065,15 @@ function convertAt(amount, fromCurrency, toCurrency, rate) {
 // Cotización efectiva del item: la "congelada" si fue confirmado, o la actual si está pendiente
 function getEffectiveRate(item) {
   if (item.auto) {
-    const record = getChargeRecord(item.projectId, item.month);
-    if (record && record.exchangeRate) return Number(record.exchangeRate);
+    if (item.sourceExpenseId) {
+      // Gasto fijo auto: chequear log de pagos recurrentes
+      const record = getExpensePaymentRecord(item.sourceExpenseId, item.month);
+      if (record && record.exchangeRate) return Number(record.exchangeRate);
+    } else {
+      // Mensualidad de proyecto
+      const record = getChargeRecord(item.projectId, item.month);
+      if (record && record.exchangeRate) return Number(record.exchangeRate);
+    }
   } else if (item.exchangeRateAtTime) {
     return Number(item.exchangeRateAtTime);
   }
@@ -2279,12 +2367,14 @@ function renderFinance() {
     .map(i => ({ ...i, status: i.status || 'CONFIRMED' }));
   const autoInc = getAutoIncomesInRange(from, to);
   const inc = [...autoInc, ...realInc];
-  const exp = state.expenses.filter(e => e.date && inRange(e.date, from, to))
+  const realExp = state.expenses.filter(e => e.date && inRange(e.date, from, to))
     .map(e => ({ ...e, status: e.status || 'PAID' }));
+  const autoExp = getAutoExpensesInRange(from, to);
+  const exp = [...autoExp, ...realExp];
 
   // Totals in base currency, separated by confirmed/pending
   const isIncConfirmed = (i) => i.auto ? i.status === 'CHARGED' : i.status === 'CONFIRMED';
-  const isExpPaid = (e) => e.status === 'PAID';
+  const isExpPaid = (e) => e.auto ? e.status === 'PAID' : (e.status || 'PAID') === 'PAID';
   const incTotalConfirmed = inc.filter(isIncConfirmed).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
   const incTotalPending = inc.filter(i => !isIncConfirmed(i)).reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
   const incTotal = incTotalConfirmed + incTotalPending;
@@ -2300,8 +2390,9 @@ function renderFinance() {
   const monthlyData = showBreakdown ? monthsInRange.map(m => {
     const realI = state.incomes.filter(i => i.date && i.date.startsWith(m) && (i.status || 'CONFIRMED') === 'CONFIRMED').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
     const autoI = getAutoIncomes(m).filter(i => i.status === 'CHARGED').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
-    const e = state.expenses.filter(x => x.date && x.date.startsWith(m) && (x.status || 'PAID') === 'PAID').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
-    return { month: m, income: realI + autoI, expense: e, balance: realI + autoI - e };
+    const realE = state.expenses.filter(x => x.date && x.date.startsWith(m) && (x.status || 'PAID') === 'PAID').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
+    const autoE = getAutoExpenses(m).filter(x => x.status === 'PAID').reduce((a,b) => a + toBaseCurrencyForItem(b, baseCur), 0);
+    return { month: m, income: realI + autoI, expense: realE + autoE, balance: realI + autoI - realE - autoE };
   }) : [];
   const maxAbs = Math.max(1, ...monthlyData.map(d => Math.max(d.income, d.expense)));
 
@@ -2497,8 +2588,10 @@ function renderFinance() {
                           ` : '—'}
                         </td>
                         <td class="px-3 py-2.5">
-                          ${it.auto
+                          ${it.auto && isInc
                             ? `<button onclick="toggleMonthCharged('${it.projectId}','${it.month}')" class="chip ${status.color} cursor-pointer hover:opacity-80" title="${isPending ? 'Marcar como cobrado' : 'Marcar como pendiente'}">${status.label}</button>`
+                            : it.auto && !isInc
+                            ? `<button onclick="toggleExpenseMonthPaid('${it.sourceExpenseId}','${it.month}')" class="chip ${status.color} cursor-pointer hover:opacity-80" title="${isPending ? 'Marcar como pagado' : 'Marcar como pendiente'}">${status.label}</button>`
                             : `<button onclick="toggleItemStatus('${it._kind}','${it.id}')" class="chip ${status.color} cursor-pointer hover:opacity-80">${status.label}</button>`
                           }
                         </td>
@@ -2508,6 +2601,10 @@ function renderFinance() {
                               <button onclick="sendPaymentReminder(${JSON.stringify(it).replace(/"/g, '&quot;')})" class="text-green-700 hover:bg-green-50 p-1.5 rounded-md transition" title="Enviar recordatorio por WhatsApp">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
                               </button>
+                            ` : ''}
+                            ${it.auto && !isInc ? `
+                              <button onclick="openExpenseModal('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition" title="Editar gasto original">✎</button>
+                              <button onclick="cancelRecurringExpense('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-red-500 text-xs px-1.5 transition" title="Dar de baja este gasto fijo">✕</button>
                             ` : ''}
                             ${!it.auto ? `
                               <button onclick="${isInc?'openIncomeModal':'openExpenseModal'}('${it.id}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition">✎</button>
@@ -3297,7 +3394,9 @@ function deleteIncome(id) {
 }
 
 function openExpenseModal(id) {
-  const ex = id ? state.expenses.find(x => x.id === id) : { id: null, concept: '', amount: '', currency: state.defaultCurrency || 'ARS', date: todayISO(), category: 'VARIABLE', projectId: '', status: 'PAID' };
+  const ex = id ? state.expenses.find(x => x.id === id) : { id: null, concept: '', amount: '', currency: state.defaultCurrency || 'ARS', date: todayISO(), category: 'VARIABLE', projectId: '', status: 'PAID', recurring: true, recurringEndDate: '' };
+  const isFixed = (ex.category || 'VARIABLE') === 'FIXED';
+  const isRecurring = ex.recurring !== false;
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar gasto' : 'Nuevo gasto'}</h2>
@@ -3316,7 +3415,7 @@ function openExpenseModal(id) {
           <div><label class="text-xs text-gray-500">Fecha</label><input type="date" name="date" class="input" required value="${ex.date}" /></div>
           <div>
             <label class="text-xs text-gray-500">Categoría</label>
-            <select name="category">
+            <select name="category" onchange="toggleRecurringFields(this.value)">
               ${Object.entries(EXPENSE_CAT).map(([k,v]) => `<option value="${k}" ${ex.category===k?'selected':''}>${v}</option>`).join('')}
             </select>
           </div>
@@ -3337,6 +3436,20 @@ function openExpenseModal(id) {
             </select>
           </div>
         </div>
+
+        <div id="recurringBox" class="${isFixed?'':'hidden'} bg-gray-50 rounded-lg p-3 space-y-2">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" name="recurring" ${isRecurring?'checked':''} class="w-4 h-4" />
+            <span class="text-sm font-medium">Repetir este gasto cada mes</span>
+          </label>
+          <p class="text-[11px] text-gray-500">Va a aparecer automáticamente como <b>pendiente</b> en los meses siguientes. Los marcás como pagado cuando corresponda.</p>
+          <div>
+            <label class="text-xs text-gray-500">Pagar hasta <span class="text-gray-400">(opcional, si querés darlo de baja en una fecha futura)</span></label>
+            <input type="date" name="recurringEndDate" class="input" value="${ex.recurringEndDate || ''}" />
+          </div>
+          ${id && ex.recurringEndDate ? `<p class="text-[11px] text-amber-700">⚠ Este gasto está dado de baja a partir de ${fmt(ex.recurringEndDate)}.</p>` : ''}
+        </div>
+
         <div class="flex justify-${id?'between':'end'} gap-2 pt-3">
           ${id ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteExpense('${id}')">Eliminar</button>` : ''}
           <div class="flex gap-2">
@@ -3349,10 +3462,20 @@ function openExpenseModal(id) {
   `);
 }
 
+function toggleRecurringFields(category) {
+  const box = document.getElementById('recurringBox');
+  if (!box) return;
+  if (category === 'FIXED') box.classList.remove('hidden');
+  else box.classList.add('hidden');
+}
+
 function saveExpense(e) {
   e.preventDefault();
   const data = Object.fromEntries(new FormData(e.target).entries());
   data.amount = Number(data.amount);
+  // El checkbox sólo entra a FormData si está checked; si no está, queda undefined
+  data.recurring = data.category === 'FIXED' ? (data.recurring === 'on') : false;
+  data.recurringEndDate = data.recurringEndDate || null;
   if (data.id) {
     const existing = state.expenses.find(x => x.id === data.id);
     const wasPaid = (existing.status || 'PAID') === 'PAID';
