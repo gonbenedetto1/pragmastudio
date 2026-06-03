@@ -411,6 +411,13 @@ const PROJECT_STATUS = {
 };
 const PROJECT_STATUS_ORDER = ['LEAD','POSSIBLE','IN_DEVELOPMENT','ACTIVE_RECURRING','PAUSED','DONE','ARCHIVED'];
 
+const PROJECT_TYPE = {
+  SYSTEM: { label: 'Sistema', color: 'bg-purple-100 text-purple-700', icon: '⚙' },
+  WEB:    { label: 'Web',     color: 'bg-blue-100 text-blue-700',     icon: '◐' },
+  OTHER:  { label: 'Otro',    color: 'bg-gray-100 text-gray-700',     icon: '✦' },
+};
+const PROJECT_TYPE_ORDER = ['SYSTEM','WEB','OTHER'];
+
 // ============ HELPERS ============
 function getProject(id) { return state.projects.find(p => p.id === id); }
 function getTask(id)    { return state.tasks.find(t => t.id === id); }
@@ -899,7 +906,14 @@ function renderGantt() {
 
 // ============ PROJECTS ============
 let projectsViewMode = 'kanban'; // 'kanban' | 'list'
-let projectsListStatus = ''; // filter for list view
+let projectsListStatus = '';      // filter for list view
+let projectsTypeFilter = '';      // 'SYSTEM' | 'WEB' | 'OTHER' | ''
+
+function getFilteredProjectsByType() {
+  return projectsTypeFilter
+    ? state.projects.filter(p => (p.projectType || 'OTHER') === projectsTypeFilter)
+    : state.projects;
+}
 
 function renderProjects() {
   return `
@@ -909,6 +923,16 @@ function renderProjects() {
          <button class="px-3 py-1 rounded-md text-sm ${projectsViewMode==='list'?'bg-white shadow-sm font-medium':''}" onclick="projectsViewMode='list'; render()">Lista</button>
        </div>
        <button class="btn-primary" onclick="openProjectModal()">+ Nuevo</button>`)}
+
+    <div class="px-4 md:px-10 pb-4 flex flex-wrap gap-2">
+      <button onclick="projectsTypeFilter=''; render()" class="chip ${projectsTypeFilter===''?'bg-black text-white':'bg-gray-100 text-gray-700'} py-1.5 px-3 cursor-pointer">Todos (${state.projects.length})</button>
+      ${PROJECT_TYPE_ORDER.map(k => {
+        const n = state.projects.filter(p => (p.projectType || 'OTHER') === k).length;
+        if (n === 0) return '';
+        const t = PROJECT_TYPE[k];
+        return `<button onclick="projectsTypeFilter='${k}'; render()" class="chip ${projectsTypeFilter===k?'bg-black text-white':t.color} py-1.5 px-3 cursor-pointer">${t.icon} ${t.label} (${n})</button>`;
+      }).join('')}
+    </div>
 
     <div class="px-4 md:px-10 pb-10">
       ${state.projects.length === 0
@@ -920,11 +944,12 @@ function renderProjects() {
 }
 
 function renderProjectsKanban() {
+  const all = getFilteredProjectsByType();
   return `
     <div class="flex gap-4 overflow-x-auto scroll-hide pb-4">
       ${PROJECT_STATUS_ORDER.map(k => {
         const s = PROJECT_STATUS[k];
-        const colProjects = state.projects.filter(p => p.status === k);
+        const colProjects = all.filter(p => p.status === k);
         return `
           <div class="kanban-col" style="width:280px;flex-shrink:0"
                ondragover="dragColOver(event)"
@@ -949,8 +974,8 @@ function renderProjectsKanban() {
 }
 
 function renderProjectsList() {
-  // Optionally filter
-  const filtered = projectsListStatus ? state.projects.filter(p => p.status === projectsListStatus) : state.projects;
+  const all = getFilteredProjectsByType();
+  const filtered = projectsListStatus ? all.filter(p => p.status === projectsListStatus) : all;
   const sorted = [...filtered].sort((a, b) => {
     const orderA = PROJECT_STATUS_ORDER.indexOf(a.status);
     const orderB = PROJECT_STATUS_ORDER.indexOf(b.status);
@@ -977,6 +1002,7 @@ function renderProjectsList() {
 
 function projectListRow(p) {
   const s = PROJECT_STATUS[p.status] || PROJECT_STATUS.LEAD;
+  const tp = PROJECT_TYPE[p.projectType] || PROJECT_TYPE.OTHER;
   const pr = projectProgress(p.id);
   const taskCount = state.tasks.filter(t => t.projectId === p.id).length;
   const activeTasks = state.tasks.filter(t => t.projectId === p.id && t.status !== 'COMPLETED').length;
@@ -987,6 +1013,7 @@ function projectListRow(p) {
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="font-semibold text-sm truncate">${escapeHtml(p.name)}</span>
+          <span class="chip ${tp.color}">${tp.icon} ${tp.label}</span>
           <span class="chip ${s.color}">${s.label}</span>
           ${blockedTasks ? `<span class="chip bg-red-100 text-red-700">⚠ ${blockedTasks}</span>` : ''}
         </div>
@@ -1008,6 +1035,7 @@ function projectCard(p) {
   const taskCount = state.tasks.filter(t => t.projectId === p.id).length;
   const activeTasks = state.tasks.filter(t => t.projectId === p.id && t.status !== 'COMPLETED').length;
   const blockedTasks = state.tasks.filter(t => t.projectId === p.id && t.status === 'BLOCKED').length;
+  const tp = PROJECT_TYPE[p.projectType] || PROJECT_TYPE.OTHER;
   return `
     <div class="task-card draggable"
          draggable="true"
@@ -1017,6 +1045,9 @@ function projectCard(p) {
       <div class="flex items-center gap-2 mb-1">
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${p.color}"></span>
         <span class="text-sm font-semibold truncate flex-1">${escapeHtml(p.name)}</span>
+      </div>
+      <div class="flex items-center gap-1 mb-1">
+        <span class="chip ${tp.color} text-[10px]">${tp.icon} ${tp.label}</span>
       </div>
       ${p.contactName ? `<div class="text-xs text-gray-500 truncate">${escapeHtml(p.contactName)}</div>` : ''}
       ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="text-xs text-green-700 font-medium mt-1">${fmtAmount(p.monthlyFee, p.monthlyFeeCurrency)}/mes</div>` : ''}
@@ -1156,6 +1187,7 @@ function openProjectDetail(id) {
             <h2 class="text-xl md:text-2xl font-semibold leading-tight">${escapeHtml(p.name)}</h2>
           </div>
           <div class="flex items-center gap-2 mt-2 flex-wrap">
+            ${(() => { const tp = PROJECT_TYPE[p.projectType] || PROJECT_TYPE.OTHER; return `<span class="chip ${tp.color}">${tp.icon} ${tp.label}</span>`; })()}
             <span class="chip ${s.color}">${s.label}</span>
             ${p.contactName ? `<span class="text-sm text-gray-500">· ${escapeHtml(p.contactName)}</span>` : ''}
           </div>
@@ -3411,12 +3443,31 @@ function addComment(e, taskId) {
 
 // ---- Project modal ----
 function openProjectModal(id) {
-  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', monthlyFeeCurrency: state.defaultCurrency || 'ARS', contactName: '', contactEmail: '', contactPhone: '', systemUrl: '' };
+  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', projectType: 'SYSTEM', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', monthlyFeeCurrency: state.defaultCurrency || 'ARS', contactName: '', contactEmail: '', contactPhone: '', systemUrl: '' };
+  const ptype = p.projectType || 'OTHER';
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar proyecto' : 'Nuevo proyecto'}</h2>
       <form onsubmit="saveProject(event)" class="space-y-3">
         <input type="hidden" name="id" value="${p.id || ''}" />
+        <div>
+          <label class="text-xs text-gray-500 mb-1 block">Tipo de proyecto</label>
+          <div class="grid grid-cols-3 gap-2">
+            ${PROJECT_TYPE_ORDER.map(k => {
+              const t = PROJECT_TYPE[k];
+              return `
+                <label class="cursor-pointer">
+                  <input type="radio" name="projectType" value="${k}" ${ptype===k?'checked':''} class="peer sr-only" />
+                  <span class="block p-3 rounded-lg border-2 border-gray-200 peer-checked:border-black peer-checked:bg-gray-50 hover:border-gray-400 transition text-center">
+                    <div class="text-lg">${t.icon}</div>
+                    <div class="text-sm font-medium">${t.label}</div>
+                    <div class="text-[10px] text-gray-500">${k==='SYSTEM'?'Mensualidad':k==='WEB'?'Inicio/fin':'Cualquier otro'}</div>
+                  </span>
+                </label>
+              `;
+            }).join('')}
+          </div>
+        </div>
         <div>
           <label class="text-xs text-gray-500">Nombre</label>
           <input name="name" class="input" required autofocus value="${escapeAttr(p.name)}" />
