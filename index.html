@@ -412,11 +412,21 @@ const PROJECT_STATUS = {
 const PROJECT_STATUS_ORDER = ['LEAD','POSSIBLE','IN_DEVELOPMENT','ACTIVE_RECURRING','PAUSED','DONE','ARCHIVED'];
 
 const PROJECT_TYPE = {
-  SYSTEM: { label: 'Sistema', color: 'bg-purple-100 text-purple-700', icon: '⚙' },
-  WEB:    { label: 'Web',     color: 'bg-blue-100 text-blue-700',     icon: '◐' },
-  OTHER:  { label: 'Otro',    color: 'bg-gray-100 text-gray-700',     icon: '✦' },
+  SYSTEM: { label: 'Sistema', hint: 'Mensualidad' },
+  WEB:    { label: 'Web',     hint: 'Inicio/fin' },
+  OTHER:  { label: 'Otro',    hint: 'Cualquier otro' },
 };
 const PROJECT_TYPE_ORDER = ['SYSTEM','WEB','OTHER'];
+
+// Devuelve los tipos del proyecto como array (maneja legacy con projectType string)
+function getProjectTypes(p) {
+  if (Array.isArray(p.projectTypes) && p.projectTypes.length) return p.projectTypes;
+  if (p.projectType) return [p.projectType];
+  return ['OTHER'];
+}
+function projectTypesText(p) {
+  return getProjectTypes(p).map(k => (PROJECT_TYPE[k] || PROJECT_TYPE.OTHER).label).join(' · ');
+}
 
 // ============ HELPERS ============
 function getProject(id) { return state.projects.find(p => p.id === id); }
@@ -911,7 +921,7 @@ let projectsTypeFilter = '';      // 'SYSTEM' | 'WEB' | 'OTHER' | ''
 
 function getFilteredProjectsByType() {
   return projectsTypeFilter
-    ? state.projects.filter(p => (p.projectType || 'OTHER') === projectsTypeFilter)
+    ? state.projects.filter(p => getProjectTypes(p).includes(projectsTypeFilter))
     : state.projects;
 }
 
@@ -927,10 +937,10 @@ function renderProjects() {
     <div class="px-4 md:px-10 pb-4 flex flex-wrap gap-2">
       <button onclick="projectsTypeFilter=''; render()" class="chip ${projectsTypeFilter===''?'bg-black text-white':'bg-gray-100 text-gray-700'} py-1.5 px-3 cursor-pointer">Todos (${state.projects.length})</button>
       ${PROJECT_TYPE_ORDER.map(k => {
-        const n = state.projects.filter(p => (p.projectType || 'OTHER') === k).length;
+        const n = state.projects.filter(p => getProjectTypes(p).includes(k)).length;
         if (n === 0) return '';
         const t = PROJECT_TYPE[k];
-        return `<button onclick="projectsTypeFilter='${k}'; render()" class="chip ${projectsTypeFilter===k?'bg-black text-white':t.color} py-1.5 px-3 cursor-pointer">${t.icon} ${t.label} (${n})</button>`;
+        return `<button onclick="projectsTypeFilter='${k}'; render()" class="chip ${projectsTypeFilter===k?'bg-black text-white':'bg-gray-100 text-gray-700'} py-1.5 px-3 cursor-pointer">${t.label} (${n})</button>`;
       }).join('')}
     </div>
 
@@ -1002,7 +1012,6 @@ function renderProjectsList() {
 
 function projectListRow(p) {
   const s = PROJECT_STATUS[p.status] || PROJECT_STATUS.LEAD;
-  const tp = PROJECT_TYPE[p.projectType] || PROJECT_TYPE.OTHER;
   const pr = projectProgress(p.id);
   const taskCount = state.tasks.filter(t => t.projectId === p.id).length;
   const activeTasks = state.tasks.filter(t => t.projectId === p.id && t.status !== 'COMPLETED').length;
@@ -1013,7 +1022,7 @@ function projectListRow(p) {
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="font-semibold text-sm truncate">${escapeHtml(p.name)}</span>
-          <span class="chip ${tp.color}">${tp.icon} ${tp.label}</span>
+          <span class="text-[10px] uppercase tracking-wider text-gray-500 font-medium">${escapeHtml(projectTypesText(p))}</span>
           <span class="chip ${s.color}">${s.label}</span>
           ${blockedTasks ? `<span class="chip bg-red-100 text-red-700">⚠ ${blockedTasks}</span>` : ''}
         </div>
@@ -1035,7 +1044,6 @@ function projectCard(p) {
   const taskCount = state.tasks.filter(t => t.projectId === p.id).length;
   const activeTasks = state.tasks.filter(t => t.projectId === p.id && t.status !== 'COMPLETED').length;
   const blockedTasks = state.tasks.filter(t => t.projectId === p.id && t.status === 'BLOCKED').length;
-  const tp = PROJECT_TYPE[p.projectType] || PROJECT_TYPE.OTHER;
   return `
     <div class="task-card draggable"
          draggable="true"
@@ -1046,9 +1054,7 @@ function projectCard(p) {
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${p.color}"></span>
         <span class="text-sm font-semibold truncate flex-1">${escapeHtml(p.name)}</span>
       </div>
-      <div class="flex items-center gap-1 mb-1">
-        <span class="chip ${tp.color} text-[10px]">${tp.icon} ${tp.label}</span>
-      </div>
+      <div class="text-[10px] uppercase tracking-wider text-gray-500 font-medium mb-1">${escapeHtml(projectTypesText(p))}</div>
       ${p.contactName ? `<div class="text-xs text-gray-500 truncate">${escapeHtml(p.contactName)}</div>` : ''}
       ${p.status === 'ACTIVE_RECURRING' && p.monthlyFee ? `<div class="text-xs text-green-700 font-medium mt-1">${fmtAmount(p.monthlyFee, p.monthlyFeeCurrency)}/mes</div>` : ''}
       ${taskCount > 0 ? `
@@ -1187,7 +1193,7 @@ function openProjectDetail(id) {
             <h2 class="text-xl md:text-2xl font-semibold leading-tight">${escapeHtml(p.name)}</h2>
           </div>
           <div class="flex items-center gap-2 mt-2 flex-wrap">
-            ${(() => { const tp = PROJECT_TYPE[p.projectType] || PROJECT_TYPE.OTHER; return `<span class="chip ${tp.color}">${tp.icon} ${tp.label}</span>`; })()}
+            <span class="text-[10px] uppercase tracking-wider text-gray-500 font-medium">${escapeHtml(projectTypesText(p))}</span>
             <span class="chip ${s.color}">${s.label}</span>
             ${p.contactName ? `<span class="text-sm text-gray-500">· ${escapeHtml(p.contactName)}</span>` : ''}
           </div>
@@ -3443,25 +3449,25 @@ function addComment(e, taskId) {
 
 // ---- Project modal ----
 function openProjectModal(id) {
-  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', projectType: 'SYSTEM', status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', monthlyFeeCurrency: state.defaultCurrency || 'ARS', contactName: '', contactEmail: '', contactPhone: '', systemUrl: '' };
-  const ptype = p.projectType || 'OTHER';
+  const p = id ? getProject(id) : { id: null, name: '', description: '', color: '#3b82f6', projectTypes: ['SYSTEM'], status: 'LEAD', startDate: todayISO(), endDate: '', budget: '', monthlyFee: '', monthlyFeeCurrency: state.defaultCurrency || 'ARS', contactName: '', contactEmail: '', contactPhone: '', systemUrl: '' };
+  const ptypes = getProjectTypes(p);
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar proyecto' : 'Nuevo proyecto'}</h2>
       <form onsubmit="saveProject(event)" class="space-y-3">
         <input type="hidden" name="id" value="${p.id || ''}" />
         <div>
-          <label class="text-xs text-gray-500 mb-1 block">Tipo de proyecto</label>
+          <label class="text-xs text-gray-500 mb-1 block">Tipo de proyecto <span class="text-gray-400">(podés elegir más de uno)</span></label>
           <div class="grid grid-cols-3 gap-2">
             ${PROJECT_TYPE_ORDER.map(k => {
               const t = PROJECT_TYPE[k];
+              const checked = ptypes.includes(k);
               return `
                 <label class="cursor-pointer">
-                  <input type="radio" name="projectType" value="${k}" ${ptype===k?'checked':''} class="peer sr-only" />
+                  <input type="checkbox" name="projectTypes" value="${k}" ${checked?'checked':''} class="peer sr-only" />
                   <span class="block p-3 rounded-lg border-2 border-gray-200 peer-checked:border-black peer-checked:bg-gray-50 hover:border-gray-400 transition text-center">
-                    <div class="text-lg">${t.icon}</div>
                     <div class="text-sm font-medium">${t.label}</div>
-                    <div class="text-[10px] text-gray-500">${k==='SYSTEM'?'Mensualidad':k==='WEB'?'Inicio/fin':'Cualquier otro'}</div>
+                    <div class="text-[10px] text-gray-500 mt-0.5">${t.hint}</div>
                   </span>
                 </label>
               `;
@@ -3544,9 +3550,14 @@ function openProjectModal(id) {
 
 function saveProject(e) {
   e.preventDefault();
-  const data = Object.fromEntries(new FormData(e.target).entries());
+  const fd = new FormData(e.target);
+  const data = Object.fromEntries(fd.entries());
   data.budget     = data.budget     ? Number(data.budget)     : null;
   data.monthlyFee = data.monthlyFee ? Number(data.monthlyFee) : null;
+  // Multi-select de tipos
+  data.projectTypes = fd.getAll('projectTypes');
+  if (data.projectTypes.length === 0) data.projectTypes = ['OTHER'];
+  delete data.projectType;  // limpia campo legacy
   if (data.id) {
     Object.assign(getProject(data.id), data);
   } else {
