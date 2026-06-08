@@ -1717,6 +1717,7 @@ function renderTeam() {
         ${state.members.map(m => {
           const tasks = state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length;
           const isMe = m.id === currentMemberId;
+          const linkedLogin = LOGIN_USERS.find(u => u.memberId === m.id);
           return `
             <div class="p-4 flex items-center gap-3 hover:bg-gray-50 flex-wrap">
               <span class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
@@ -1724,19 +1725,23 @@ function renderTeam() {
                 <div class="flex items-center gap-2 flex-wrap">
                   <span class="font-medium">${escapeHtml(m.name)}</span>
                   ${isMe ? '<span class="chip bg-blue-100 text-blue-700">Vos</span>' : ''}
+                  ${linkedLogin ? `<span class="chip bg-purple-100 text-purple-700" title="Usuario con acceso: ${escapeAttr(linkedLogin.username)}">🔑 ${escapeHtml(linkedLogin.username)}</span>` : ''}
                   ${m.email ? '<span class="chip bg-gray-100 text-gray-700">✉</span>' : ''}
                 </div>
                 <div class="text-xs text-gray-500">${m.email ? escapeHtml(m.email) + ' · ' : ''}${tasks} tarea${tasks!==1?'s':''} activa${tasks!==1?'s':''}</div>
               </div>
-              <div class="flex gap-1 flex-wrap">
-                <button class="btn-ghost text-sm" onclick="openMemberModal('${m.id}')">Editar</button>
-                ${!isMe ? `<button class="btn-ghost text-sm" onclick="setCurrentMember('${m.id}')">Ser ${escapeHtml(m.name)}</button>` : ''}
+              <div class="flex gap-1 flex-wrap items-center">
+                <button class="btn-ghost text-sm" onclick="openMemberModal('${m.id}')" title="Editar nombre, email y color">✎ Editar</button>
+                ${isMe
+                  ? '<span class="text-xs text-gray-400 px-2">no podés eliminarte</span>'
+                  : `<button class="btn-ghost text-sm text-red-600 hover:bg-red-50" onclick="deleteMember('${m.id}')" title="Eliminar miembro">✕ Eliminar</button>`
+                }
               </div>
             </div>
           `;
         }).join('')}
       </div>
-      <p class="text-xs text-gray-500">En comentarios escribí <b>@Nombre</b> para notificar a un miembro.</p>
+      <p class="text-xs text-gray-500">En comentarios escribí <b>@Nombre</b> para notificar a un miembro. El 🔑 indica que el miembro tiene acceso por login.</p>
 
       ${renderEmailSettings()}
       ${renderFinanceSettings()}
@@ -1983,10 +1988,28 @@ function saveMember(e) {
 }
 
 function deleteMember(id) {
-  if (!confirm('¿Eliminar miembro? Las tareas asignadas quedarán sin asignar.')) return;
+  if (id === currentMemberId) {
+    alert('No podés eliminarte a vos mismo. Hacé logout primero o pedile a otro miembro que te elimine.');
+    return;
+  }
+  const m = getMember(id);
+  if (!m) return;
+  const activeTasks = state.tasks.filter(t => t.assigneeId === id && t.status !== 'COMPLETED').length;
+  const linkedLogin = LOGIN_USERS.find(u => u.memberId === id);
+  let warning = `¿Eliminar a ${m.name}?`;
+  if (activeTasks > 0) warning += `\n\n${activeTasks} tarea${activeTasks>1?'s':''} activa${activeTasks>1?'s':''} queda${activeTasks>1?'n':''} sin asignar.`;
+  if (linkedLogin) warning += `\n\n⚠ ${m.name} tiene login activo (${linkedLogin.username}). Si se loguea de nuevo, se va a re-crear el miembro automáticamente. Para evitarlo, sacá también la entrada de LOGIN_USERS en el HTML.`;
+  if (!confirm(warning)) return;
+
   state.members = state.members.filter(m => m.id !== id);
   state.tasks.forEach(t => { if (t.assigneeId === id) t.assigneeId = null; });
-  save(); closeModal(); render();
+  // Limpiar comentarios huérfanos? No — los dejamos para mantener historial, sólo no resuelven al miembro.
+  // Limpiar notificaciones dirigidas al eliminado
+  state.notifications = (state.notifications || []).filter(n => n.forMemberId !== id);
+  save();
+  closeModal();
+  render();
+  showToast(`${m.name} eliminado`, 'success');
 }
 
 function openMemberPicker() {
