@@ -200,6 +200,7 @@ const DEFAULT_STATE = {
   documents: [],      // { id, title, url, category, description, createdAt }
   resources: [],      // { id, title, url, category, description, createdAt }
   emailConfig: { enabled: false, serviceId: '', templateId: '', publicKey: '' },
+  authVersion: 1,                 // Incrementar para forzar logout en todos los dispositivos
   recurringChargeLog: [],         // { id, projectId, month, amount?, chargedAt, chargedBy, exchangeRate, note }
   recurringExpensePayments: [],   // { id, expenseId, month, amount?, paidAt, paidBy, exchangeRate, note }
   incomePayments: [],             // { id, incomeId, amount, date, paidAt, paidBy, exchangeRate, note }
@@ -257,7 +258,13 @@ async function attemptLogin(username, password) {
   const hash = await sha256(password);
   if (hash !== u.passwordHash) return { ok: false, error: 'Contraseña incorrecta' };
   // Login OK — guardar y asegurar que el miembro existe
-  localStorage.setItem('pragma_auth', JSON.stringify({ username: u.username, memberId: u.memberId, name: u.name, at: Date.now() }));
+  localStorage.setItem('pragma_auth', JSON.stringify({
+    username: u.username,
+    memberId: u.memberId,
+    name: u.name,
+    authVersion: state.authVersion || 1,
+    at: Date.now(),
+  }));
   // Si el miembro no existe en state, créalo
   if (!getMember(u.memberId)) {
     state.members.push({ id: u.memberId, name: u.name, color: u.color });
@@ -272,6 +279,36 @@ function logout() {
   if (!confirm('¿Cerrar sesión?')) return;
   localStorage.removeItem('pragma_auth');
   location.reload();
+}
+
+// Chequea si la auth local es válida vs la versión global
+let _kickedAlready = false;
+function checkAuthValid() {
+  if (_kickedAlready) return false;
+  const auth = getAuthUser();
+  if (!auth) return true; // no logueado, no aplica
+  const currentVersion = state.authVersion || 1;
+  const savedVersion = auth.authVersion || 1;
+  if (savedVersion < currentVersion) {
+    _kickedAlready = true;
+    localStorage.removeItem('pragma_auth');
+    showToast('⚠ Sesión cerrada remotamente. Recargando...', 'info', 3000);
+    setTimeout(() => location.reload(), 1500);
+    return false;
+  }
+  return true;
+}
+
+// Cierra sesión en todos los dispositivos (incluido el actual)
+function kickAllSessions() {
+  if (!confirm('¿Cerrar sesión en TODOS los dispositivos?\n\nEsto va a desloguear inmediatamente a cualquier persona que tenga la app abierta, incluido a vos. Todos van a tener que ingresar sus credenciales de nuevo.')) return;
+  state.authVersion = (state.authVersion || 1) + 1;
+  save();
+  showToast('Cerrando todas las sesiones...', 'info', 2000);
+  setTimeout(() => {
+    localStorage.removeItem('pragma_auth');
+    location.reload();
+  }, 1500);
 }
 
 function renderLoginOverlay() {
@@ -377,6 +414,8 @@ async function initSupabase() {
     if (data && data.data) {
       state = { ...structuredClone(DEFAULT_STATE), ...data.data };
       localStorage.setItem('pragma_state', JSON.stringify(state));
+      // Chequeo de versión de auth — kick remoto al cargar
+      if (!checkAuthValid()) return;
       renderNav();
       render();
     } else {
@@ -398,6 +437,8 @@ async function initSupabase() {
           state = { ...structuredClone(DEFAULT_STATE), ...newRow.data };
           localStorage.setItem('pragma_state', JSON.stringify(state));
           setSyncStatus('Sincronizado', '#22c55e');
+          // Detectar kick remoto (versión de auth bumpeada)
+          if (!checkAuthValid()) return;
           // Show toast for new notifications addressed to me
           (state.notifications || []).forEach(n => {
             if (!prevNotifIds.has(n.id) && n.forMemberId === currentMemberId && !n.read) {
@@ -1745,6 +1786,23 @@ function renderTeam() {
 
       ${renderEmailSettings()}
       ${renderFinanceSettings()}
+      ${renderSecuritySettings()}
+    </div>
+  `;
+}
+
+function renderSecuritySettings() {
+  return `
+    <div class="card p-5 border border-red-100">
+      <h3 class="font-semibold mb-1">Seguridad de sesiones</h3>
+      <p class="text-xs text-gray-500 mb-4">Cerrar todas las sesiones abiertas si sospechás que alguien no autorizado tiene la app abierta.</p>
+      <button onclick="kickAllSessions()" class="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition flex items-center gap-2">
+        ⚠ Cerrar sesión en todos los dispositivos
+      </button>
+      <p class="text-[11px] text-gray-500 mt-3">
+        Esto te va a desloguear inmediatamente a vos también (te pide login de nuevo).
+        Cualquier persona que tenga la app abierta en otro dispositivo va a ser kickeada en ~1-2 segundos.
+      </p>
     </div>
   `;
 }
