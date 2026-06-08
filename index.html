@@ -229,11 +229,12 @@ const RES_CATEGORIES = ['Diseño', 'Desarrollo', 'IA', 'Marketing', 'Productivid
 let currentMemberId = localStorage.getItem('pragma_current_member') || 'me';
 
 // ============ LOGIN ============
-// Hash SHA-256 de "pragma2026" para los 3 usuarios. Cambialos editando este archivo.
+// SHA-256 de las contraseñas (no las contraseñas en texto plano).
+// Para rotarlas: echo -n "NuevaPass" | shasum -a 256
 const LOGIN_USERS = [
-  { username: 'gonzalo', memberId: 'me',    name: 'Gonzalo', color: '#3b82f6', passwordHash: '7669ab6df6fb06cf1fe1b717ca97f3c4b543c6b3cc533d826ded79a139f976a1' },
-  { username: 'ber',     memberId: 'ber',   name: 'Ber',     color: '#ec4899', passwordHash: '7669ab6df6fb06cf1fe1b717ca97f3c4b543c6b3cc533d826ded79a139f976a1' },
-  { username: 'pragma3', memberId: 'pragma3', name: 'Usuario 3', color: '#10b981', passwordHash: '7669ab6df6fb06cf1fe1b717ca97f3c4b543c6b3cc533d826ded79a139f976a1' },
+  { username: 'gonzalo', memberId: 'me',      name: 'Gonzalo', color: '#3b82f6', passwordHash: 'd09f4154980bafd7e98cf8ed9f6d8c7db00a212b2b9bdb0ba4da2ca2aaba92ce' },
+  { username: 'gaspar',  memberId: 'gaspar',  name: 'Gaspar',  color: '#ec4899', passwordHash: '027ef04841149bda47cda30b55fd7911f90837a5c732c97eb486de5844dd5ae6' },
+  { username: 'facundo', memberId: 'facundo', name: 'Facundo', color: '#10b981', passwordHash: '8d76c096478e70ead9a074037ebe18906db1663922190b0d505a7a67ae81c4b7' },
 ];
 
 async function sha256(text) {
