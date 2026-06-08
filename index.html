@@ -154,6 +154,7 @@ alter publication supabase_realtime add table pragma_state;</code></pre>
       <div class="flex gap-1">
         <button onclick="exportData()" class="btn-ghost flex-1 text-xs" title="Backup local">Backup</button>
         <button onclick="importData()" class="btn-ghost flex-1 text-xs">Importar</button>
+        <button onclick="logout()" class="btn-ghost text-xs text-red-600" title="Cerrar sesión">⏏</button>
       </div>
     </div>
   </aside>
@@ -161,6 +162,9 @@ alter publication supabase_realtime add table pragma_state;</code></pre>
   <!-- Main -->
   <main id="main" class="flex-1 overflow-y-auto"></main>
 </div>
+
+<!-- Login overlay -->
+<div id="loginOverlay" class="hidden fixed inset-0 z-[200] bg-gray-50 flex items-center justify-center"></div>
 
 <!-- Toast container -->
 <div id="toastContainer"></div>
@@ -223,6 +227,96 @@ const RES_CATEGORIES = ['Diseño', 'Desarrollo', 'IA', 'Marketing', 'Productivid
 
 // Identidad local (no se sincroniza — cada dispositivo/persona tiene la suya)
 let currentMemberId = localStorage.getItem('pragma_current_member') || 'me';
+
+// ============ LOGIN ============
+// Hash SHA-256 de "pragma2026" para los 3 usuarios. Cambialos editando este archivo.
+const LOGIN_USERS = [
+  { username: 'gonzalo', memberId: 'me',    name: 'Gonzalo', color: '#3b82f6', passwordHash: '7669ab6df6fb06cf1fe1b717ca97f3c4b543c6b3cc533d826ded79a139f976a1' },
+  { username: 'ber',     memberId: 'ber',   name: 'Ber',     color: '#ec4899', passwordHash: '7669ab6df6fb06cf1fe1b717ca97f3c4b543c6b3cc533d826ded79a139f976a1' },
+  { username: 'pragma3', memberId: 'pragma3', name: 'Usuario 3', color: '#10b981', passwordHash: '7669ab6df6fb06cf1fe1b717ca97f3c4b543c6b3cc533d826ded79a139f976a1' },
+];
+
+async function sha256(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getAuthUser() {
+  try {
+    const raw = localStorage.getItem('pragma_auth');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function isLoggedIn() { return !!getAuthUser(); }
+
+async function attemptLogin(username, password) {
+  const u = LOGIN_USERS.find(x => x.username.toLowerCase() === (username || '').toLowerCase().trim());
+  if (!u) return { ok: false, error: 'Usuario no encontrado' };
+  const hash = await sha256(password);
+  if (hash !== u.passwordHash) return { ok: false, error: 'Contraseña incorrecta' };
+  // Login OK — guardar y asegurar que el miembro existe
+  localStorage.setItem('pragma_auth', JSON.stringify({ username: u.username, memberId: u.memberId, name: u.name, at: Date.now() }));
+  // Si el miembro no existe en state, créalo
+  if (!getMember(u.memberId)) {
+    state.members.push({ id: u.memberId, name: u.name, color: u.color });
+    save();
+  }
+  currentMemberId = u.memberId;
+  localStorage.setItem('pragma_current_member', u.memberId);
+  return { ok: true };
+}
+
+function logout() {
+  if (!confirm('¿Cerrar sesión?')) return;
+  localStorage.removeItem('pragma_auth');
+  location.reload();
+}
+
+function renderLoginOverlay() {
+  const overlay = document.getElementById('loginOverlay');
+  if (!overlay) return;
+  if (isLoggedIn()) { overlay.classList.add('hidden'); return; }
+  overlay.classList.remove('hidden');
+  overlay.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-8 fade-in">
+      <div class="flex flex-col items-center mb-6">
+        <img src="favicon.png" class="w-16 h-16 rounded-2xl mb-3" />
+        <h1 class="text-xl font-semibold">Pragma Studio</h1>
+        <p class="text-sm text-gray-500">Gestión de proyectos</p>
+      </div>
+      <form onsubmit="handleLogin(event)" class="space-y-3">
+        <div>
+          <label class="text-xs text-gray-500">Usuario</label>
+          <input id="loginUser" name="username" class="input" required autofocus autocomplete="username" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500">Contraseña</label>
+          <input type="password" name="password" class="input" required autocomplete="current-password" />
+        </div>
+        <div id="loginError" class="text-xs text-red-600 min-h-[16px]"></div>
+        <button type="submit" class="btn-primary w-full">Ingresar</button>
+      </form>
+    </div>
+  `;
+  setTimeout(() => document.getElementById('loginUser')?.focus(), 50);
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  const result = await attemptLogin(fd.get('username'), fd.get('password'));
+  if (!result.ok) {
+    errEl.textContent = result.error;
+    return;
+  }
+  document.getElementById('loginOverlay').classList.add('hidden');
+  renderNav();
+  render();
+  showToast(`Hola ${currentMember()?.name || ''}`, 'success', 2500);
+}
 
 let state = load();
 let currentView = 'tasks';
@@ -4017,8 +4111,23 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ============ BOOT ============
+// Si hay sesión guardada, restaurar el currentMemberId desde la auth
+(function restoreAuthIdentity() {
+  const auth = getAuthUser();
+  if (auth && auth.memberId) {
+    currentMemberId = auth.memberId;
+    localStorage.setItem('pragma_current_member', auth.memberId);
+    // Asegurar que el miembro existe (puede haberse borrado por accidente)
+    const u = LOGIN_USERS.find(x => x.memberId === auth.memberId);
+    if (u && !state.members.find(m => m.id === u.memberId)) {
+      state.members.push({ id: u.memberId, name: u.name, color: u.color });
+    }
+  }
+})();
+
 renderNav();
 render();
+renderLoginOverlay();
 
 // Migración: si todavía tenés la plantilla vieja redundante, pasala a la nueva
 (function migratePaymentTemplate() {
