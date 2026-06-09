@@ -286,7 +286,7 @@ let _kickedAlready = false;
 function checkAuthValid() {
   if (_kickedAlready) return false;
   const auth = getAuthUser();
-  if (!auth) return true; // no logueado, no aplica
+  if (!auth) return true;
   const currentVersion = state.authVersion || 1;
   const savedVersion = auth.authVersion || 1;
   if (savedVersion < currentVersion) {
@@ -298,6 +298,32 @@ function checkAuthValid() {
   }
   return true;
 }
+
+// Re-fetch del authVersion remoto periódicamente (independiente de WebSocket)
+async function forceCheckAuthFromServer() {
+  if (!sb || !isLoggedIn()) return;
+  try {
+    const { data } = await sb.from('pragma_state').select('data').eq('id', 'main').maybeSingle();
+    const remoteVersion = data?.data?.authVersion || 1;
+    const localAuth = getAuthUser();
+    if (localAuth && (localAuth.authVersion || 1) < remoteVersion) {
+      _kickedAlready = true;
+      localStorage.removeItem('pragma_auth');
+      showToast('⚠ Sesión cerrada remotamente. Recargando...', 'info', 3000);
+      setTimeout(() => location.reload(), 1500);
+    }
+  } catch (e) { /* ignora errores de red */ }
+}
+
+// Check cada 30s (en caso que falle realtime)
+setInterval(forceCheckAuthFromServer, 30000);
+// Check cuando vuelve el foco a la tab
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') forceCheckAuthFromServer();
+});
+window.addEventListener('focus', forceCheckAuthFromServer);
+// Check cuando vuelve conexión
+window.addEventListener('online', forceCheckAuthFromServer);
 
 // Cierra sesión en todos los dispositivos (incluido el actual)
 function kickAllSessions() {
