@@ -232,10 +232,9 @@ let currentMemberId = localStorage.getItem('pragma_current_member') || 'me';
 // Mapeo email → datos del miembro. Si entra un email nuevo, se crea miembro genérico.
 // Para agregar/cambiar: editá este mapeo y pusheá. El email debe coincidir EXACTO con el de Supabase Auth.
 const MEMBER_MAP = {
-  'gonbenedetto1@gmail.com':     { memberId: 'me',      name: 'Gonzalo', color: '#3b82f6' },
-  'gonzalo@pragmastudio.com.ar': { memberId: 'me',      name: 'Gonzalo', color: '#3b82f6' },
-  'gaspar@pragmastudio.com.ar':  { memberId: 'gaspar',  name: 'Gaspar',  color: '#ec4899' },
-  'facundo@pragmastudio.com.ar': { memberId: 'facundo', name: 'Facundo', color: '#10b981' },
+  'gonbenedetto1@gmail.com':  { memberId: 'me',      name: 'Gonzalo', color: '#3b82f6' },
+  'gasparquintana00@gmail.com': { memberId: 'gaspar', name: 'Gaspar',  color: '#ec4899' },
+  'faculamosimo@gmail.com':   { memberId: 'facundo', name: 'Facundo', color: '#10b981' },
 };
 
 let _currentAuthUser = null;  // user de Supabase Auth
