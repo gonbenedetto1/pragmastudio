@@ -200,7 +200,6 @@ const DEFAULT_STATE = {
   documents: [],      // { id, title, url, category, description, createdAt }
   resources: [],      // { id, title, url, category, description, createdAt }
   emailConfig: { enabled: false, serviceId: '', templateId: '', publicKey: '' },
-  authVersion: 1,                 // Incrementar para forzar logout en todos los dispositivos
   recurringChargeLog: [],         // { id, projectId, month, amount?, chargedAt, chargedBy, exchangeRate, note }
   recurringExpensePayments: [],   // { id, expenseId, month, amount?, paidAt, paidBy, exchangeRate, note }
   incomePayments: [],             // { id, incomeId, amount, date, paidAt, paidBy, exchangeRate, note }
@@ -229,112 +228,65 @@ const RES_CATEGORIES = ['Diseño', 'Desarrollo', 'IA', 'Marketing', 'Productivid
 // Identidad local (no se sincroniza — cada dispositivo/persona tiene la suya)
 let currentMemberId = localStorage.getItem('pragma_current_member') || 'me';
 
-// ============ LOGIN ============
-// SHA-256 de las contraseñas (no las contraseñas en texto plano).
-// Para rotarlas: echo -n "NuevaPass" | shasum -a 256
-const LOGIN_USERS = [
-  { username: 'gonzalo', memberId: 'me',      name: 'Gonzalo', color: '#3b82f6', passwordHash: 'd09f4154980bafd7e98cf8ed9f6d8c7db00a212b2b9bdb0ba4da2ca2aaba92ce' },
-  { username: 'gaspar',  memberId: 'gaspar',  name: 'Gaspar',  color: '#ec4899', passwordHash: '027ef04841149bda47cda30b55fd7911f90837a5c732c97eb486de5844dd5ae6' },
-  { username: 'facundo', memberId: 'facundo', name: 'Facundo', color: '#10b981', passwordHash: '8d76c096478e70ead9a074037ebe18906db1663922190b0d505a7a67ae81c4b7' },
-];
+// ============ LOGIN (Supabase Auth) ============
+// Mapeo email → datos del miembro. Si entra un email nuevo, se crea miembro genérico.
+const MEMBER_MAP = {
+  'gonzalo@pragmastudio.com.ar': { memberId: 'me',      name: 'Gonzalo', color: '#3b82f6' },
+  'gaspar@pragmastudio.com.ar':  { memberId: 'gaspar',  name: 'Gaspar',  color: '#ec4899' },
+  'facundo@pragmastudio.com.ar': { memberId: 'facundo', name: 'Facundo', color: '#10b981' },
+};
 
-async function sha256(text) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
+let _currentAuthUser = null;  // user de Supabase Auth
 
-function getAuthUser() {
-  try {
-    const raw = localStorage.getItem('pragma_auth');
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
+function getAuthUser() { return _currentAuthUser; }
+function isLoggedIn() { return !!_currentAuthUser; }
 
-function isLoggedIn() { return !!getAuthUser(); }
-
-async function attemptLogin(username, password) {
-  const u = LOGIN_USERS.find(x => x.username.toLowerCase() === (username || '').toLowerCase().trim());
-  if (!u) return { ok: false, error: 'Usuario no encontrado' };
-  const hash = await sha256(password);
-  if (hash !== u.passwordHash) return { ok: false, error: 'Contraseña incorrecta' };
-  // Login OK — guardar y asegurar que el miembro existe
-  localStorage.setItem('pragma_auth', JSON.stringify({
-    username: u.username,
-    memberId: u.memberId,
-    name: u.name,
-    authVersion: state.authVersion || 1,
-    at: Date.now(),
-  }));
-  // Si el miembro no existe en state, créalo
-  if (!getMember(u.memberId)) {
-    state.members.push({ id: u.memberId, name: u.name, color: u.color });
-    save();
+// Encuentra o crea el miembro local correspondiente al user de auth y setea currentMemberId
+function setMemberFromAuthUser(user) {
+  if (!user || !user.email) return;
+  const email = user.email.toLowerCase();
+  // 1. Buscar miembro existente con ese email
+  let member = state.members.find(m => (m.email || '').toLowerCase() === email);
+  if (!member) {
+    // 2. Mapeo predefinido
+    const def = MEMBER_MAP[email];
+    if (def) {
+      member = state.members.find(m => m.id === def.memberId);
+      if (member) {
+        if (!member.email) { member.email = email; save(); }
+      } else {
+        member = { id: def.memberId, name: def.name, color: def.color, email };
+        state.members.push(member); save();
+      }
+    } else {
+      // 3. Miembro genérico
+      member = { id: uid(), name: email.split('@')[0], color: '#6b7280', email };
+      state.members.push(member); save();
+    }
   }
-  currentMemberId = u.memberId;
-  localStorage.setItem('pragma_current_member', u.memberId);
+  currentMemberId = member.id;
+  localStorage.setItem('pragma_current_member', member.id);
+}
+
+async function attemptLogin(email, password) {
+  if (!sb) return { ok: false, error: 'Conexión a Supabase no disponible' };
+  const { data, error } = await sb.auth.signInWithPassword({ email: (email||'').trim(), password });
+  if (error) {
+    const msg = (error.message || '').toLowerCase();
+    if (msg.includes('invalid')) return { ok: false, error: 'Email o contraseña incorrectos' };
+    if (msg.includes('email not confirmed')) return { ok: false, error: 'Email no confirmado en Supabase' };
+    return { ok: false, error: error.message };
+  }
+  _currentAuthUser = data.user;
   return { ok: true };
 }
 
-function logout() {
+async function logout() {
   if (!confirm('¿Cerrar sesión?')) return;
-  localStorage.removeItem('pragma_auth');
+  try { await sb?.auth.signOut(); } catch (e) {}
+  _currentAuthUser = null;
+  localStorage.removeItem('pragma_current_member');
   location.reload();
-}
-
-// Chequea si la auth local es válida vs la versión global
-let _kickedAlready = false;
-function checkAuthValid() {
-  if (_kickedAlready) return false;
-  const auth = getAuthUser();
-  if (!auth) return true;
-  const currentVersion = state.authVersion || 1;
-  const savedVersion = auth.authVersion || 1;
-  if (savedVersion < currentVersion) {
-    _kickedAlready = true;
-    localStorage.removeItem('pragma_auth');
-    showToast('⚠ Sesión cerrada remotamente. Recargando...', 'info', 3000);
-    setTimeout(() => location.reload(), 1500);
-    return false;
-  }
-  return true;
-}
-
-// Re-fetch del authVersion remoto periódicamente (independiente de WebSocket)
-async function forceCheckAuthFromServer() {
-  if (!sb || !isLoggedIn()) return;
-  try {
-    const { data } = await sb.from('pragma_state').select('data').eq('id', 'main').maybeSingle();
-    const remoteVersion = data?.data?.authVersion || 1;
-    const localAuth = getAuthUser();
-    if (localAuth && (localAuth.authVersion || 1) < remoteVersion) {
-      _kickedAlready = true;
-      localStorage.removeItem('pragma_auth');
-      showToast('⚠ Sesión cerrada remotamente. Recargando...', 'info', 3000);
-      setTimeout(() => location.reload(), 1500);
-    }
-  } catch (e) { /* ignora errores de red */ }
-}
-
-// Check cada 30s (en caso que falle realtime)
-setInterval(forceCheckAuthFromServer, 30000);
-// Check cuando vuelve el foco a la tab
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') forceCheckAuthFromServer();
-});
-window.addEventListener('focus', forceCheckAuthFromServer);
-// Check cuando vuelve conexión
-window.addEventListener('online', forceCheckAuthFromServer);
-
-// Cierra sesión en todos los dispositivos (incluido el actual)
-function kickAllSessions() {
-  if (!confirm('¿Cerrar sesión en TODOS los dispositivos?\n\nEsto va a desloguear inmediatamente a cualquier persona que tenga la app abierta, incluido a vos. Todos van a tener que ingresar sus credenciales de nuevo.')) return;
-  state.authVersion = (state.authVersion || 1) + 1;
-  save();
-  showToast('Cerrando todas las sesiones...', 'info', 2000);
-  setTimeout(() => {
-    localStorage.removeItem('pragma_auth');
-    location.reload();
-  }, 1500);
 }
 
 function renderLoginOverlay() {
@@ -351,15 +303,15 @@ function renderLoginOverlay() {
       </div>
       <form onsubmit="handleLogin(event)" class="space-y-3">
         <div>
-          <label class="text-xs text-gray-500">Usuario</label>
-          <input id="loginUser" name="username" class="input" required autofocus autocomplete="username" />
+          <label class="text-xs text-gray-500">Email</label>
+          <input id="loginUser" type="email" name="email" class="input" required autofocus autocomplete="username" placeholder="tu@pragmastudio.com.ar" />
         </div>
         <div>
           <label class="text-xs text-gray-500">Contraseña</label>
           <input type="password" name="password" class="input" required autocomplete="current-password" />
         </div>
         <div id="loginError" class="text-xs text-red-600 min-h-[16px]"></div>
-        <button type="submit" class="btn-primary w-full">Ingresar</button>
+        <button type="submit" class="btn-primary w-full" id="loginSubmitBtn">Ingresar</button>
       </form>
     </div>
   `;
@@ -370,13 +322,25 @@ async function handleLogin(e) {
   e.preventDefault();
   const fd = new FormData(e.target);
   const errEl = document.getElementById('loginError');
+  const btn = document.getElementById('loginSubmitBtn');
   errEl.textContent = '';
-  const result = await attemptLogin(fd.get('username'), fd.get('password'));
+  if (btn) { btn.disabled = true; btn.textContent = 'Ingresando...'; }
+  const result = await attemptLogin(fd.get('email'), fd.get('password'));
   if (!result.ok) {
     errEl.textContent = result.error;
+    if (btn) { btn.disabled = false; btn.textContent = 'Ingresar'; }
     return;
   }
+  // Login OK
+  setMemberFromAuthUser(_currentAuthUser);
   document.getElementById('loginOverlay').classList.add('hidden');
+  // Ahora que estamos autenticados, cargar el state y suscribir realtime
+  try {
+    await loadStateFromCloud();
+    subscribeRealtime();
+  } catch (err) {
+    showToast('Error al cargar datos: ' + (err.message||err), 'info', 5000);
+  }
   renderNav();
   render();
   showToast(`Hola ${currentMember()?.name || ''}`, 'success', 2500);
@@ -433,59 +397,96 @@ async function initSupabase() {
     sb = supabase.createClient(config.url, config.key);
     setSyncStatus('Conectando...', '#fbbf24');
 
-    // Initial fetch
-    const { data, error } = await sb.from('pragma_state').select('*').eq('id', 'main').maybeSingle();
-    if (error) throw error;
-
-    if (data && data.data) {
-      state = { ...structuredClone(DEFAULT_STATE), ...data.data };
-      localStorage.setItem('pragma_state', JSON.stringify(state));
-      // Chequeo de versión de auth — kick remoto al cargar
-      if (!checkAuthValid()) return;
-      renderNav();
-      render();
-    } else {
-      // First-time: push current local state to cloud
-      await sb.from('pragma_state').upsert({ id: 'main', data: state, writer: CLIENT_ID });
+    // Check existing Supabase Auth session
+    const { data: { session } } = await sb.auth.getSession();
+    if (session?.user) {
+      _currentAuthUser = session.user;
+      setMemberFromAuthUser(session.user);
     }
 
-    cloudReady = true;
-    setSyncStatus('Sincronizado', '#22c55e');
-
-    // Subscribe to realtime changes
-    sbChannel = sb.channel('pragma-state-changes')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'pragma_state', filter: 'id=eq.main' },
-        (payload) => {
-          const newRow = payload.new;
-          if (!newRow || newRow.writer === CLIENT_ID) return;
-          const prevNotifIds = new Set((state.notifications || []).map(n => n.id));
-          state = { ...structuredClone(DEFAULT_STATE), ...newRow.data };
-          localStorage.setItem('pragma_state', JSON.stringify(state));
-          setSyncStatus('Sincronizado', '#22c55e');
-          // Detectar kick remoto (versión de auth bumpeada)
-          if (!checkAuthValid()) return;
-          // Show toast for new notifications addressed to me
-          (state.notifications || []).forEach(n => {
-            if (!prevNotifIds.has(n.id) && n.forMemberId === currentMemberId && !n.read) {
-              showToast(n.text, 'info', 5000);
-            }
-          });
-          renderNav();
-          render();
+    // Listen for auth state changes (login, logout, expiry)
+    sb.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
+        _currentAuthUser = null;
+        if (event === 'SIGNED_OUT') {
+          showToast('Sesión cerrada', 'info', 2000);
+          setTimeout(() => location.reload(), 800);
         }
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') setSyncStatus('Sincronizado', '#22c55e');
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setSyncStatus('Sin tiempo real', '#fbbf24');
-      });
+      } else if (event === 'SIGNED_IN' && session?.user) {
+        _currentAuthUser = session.user;
+        setMemberFromAuthUser(session.user);
+      } else if (event === 'USER_DELETED' || event === 'USER_UPDATED') {
+        location.reload();
+      }
+    });
+
+    if (!isLoggedIn()) {
+      // No hay sesión — mostrar overlay de login y no intentar fetch (RLS bloquea)
+      renderLoginOverlay();
+      setSyncStatus('Esperando login', '#fbbf24');
+      return;
+    }
+
+    await loadStateFromCloud();
+    subscribeRealtime();
   } catch (err) {
     console.error('Supabase init error:', err);
     setSyncStatus('Error de conexión', '#ef4444');
-    alert('Error al conectar con Supabase:\n\n' + (err.message || err) + '\n\nRevisá la URL, la key y que la tabla pragma_state exista.');
-    localStorage.removeItem('pragma_supabase_config');
-    document.getElementById('setupOverlay').classList.remove('hidden');
+    if (err.message && err.message.toLowerCase().includes('row-level security')) {
+      // No autenticado — mostrar login
+      renderLoginOverlay();
+      return;
+    }
+    alert('Error al conectar con Supabase:\n\n' + (err.message || err));
   }
+}
+
+async function loadStateFromCloud() {
+  if (!sb) return;
+  setSyncStatus('Cargando...', '#fbbf24');
+  const { data, error } = await sb.from('pragma_state').select('*').eq('id', 'main').maybeSingle();
+  if (error) {
+    setSyncStatus('Error de carga', '#ef4444');
+    throw error;
+  }
+  if (data && data.data) {
+    state = { ...structuredClone(DEFAULT_STATE), ...data.data };
+    localStorage.setItem('pragma_state', JSON.stringify(state));
+    // Re-resolver member ahora que tenemos members frescos del cloud
+    if (_currentAuthUser) setMemberFromAuthUser(_currentAuthUser);
+  } else {
+    // First-time: push local state
+    await sb.from('pragma_state').upsert({ id: 'main', data: state, writer: CLIENT_ID });
+  }
+  cloudReady = true;
+  setSyncStatus('Sincronizado', '#22c55e');
+}
+
+function subscribeRealtime() {
+  if (!sb || sbChannel) return;
+  sbChannel = sb.channel('pragma-state-changes')
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'pragma_state', filter: 'id=eq.main' },
+      (payload) => {
+        const newRow = payload.new;
+        if (!newRow || newRow.writer === CLIENT_ID) return;
+        const prevNotifIds = new Set((state.notifications || []).map(n => n.id));
+        state = { ...structuredClone(DEFAULT_STATE), ...newRow.data };
+        localStorage.setItem('pragma_state', JSON.stringify(state));
+        setSyncStatus('Sincronizado', '#22c55e');
+        (state.notifications || []).forEach(n => {
+          if (!prevNotifIds.has(n.id) && n.forMemberId === currentMemberId && !n.read) {
+            showToast(n.text, 'info', 5000);
+          }
+        });
+        renderNav();
+        render();
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') setSyncStatus('Sincronizado', '#22c55e');
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setSyncStatus('Sin tiempo real', '#fbbf24');
+    });
 }
 
 function save() {
@@ -1784,7 +1785,7 @@ function renderTeam() {
         ${state.members.map(m => {
           const tasks = state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length;
           const isMe = m.id === currentMemberId;
-          const linkedLogin = LOGIN_USERS.find(u => u.memberId === m.id);
+          const hasLogin = !!m.email;  // Con Supabase Auth, todo el que tiene email puede tener login
           return `
             <div class="p-4 flex items-center gap-3 hover:bg-gray-50 flex-wrap">
               <span class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
@@ -1792,8 +1793,7 @@ function renderTeam() {
                 <div class="flex items-center gap-2 flex-wrap">
                   <span class="font-medium">${escapeHtml(m.name)}</span>
                   ${isMe ? '<span class="chip bg-blue-100 text-blue-700">Vos</span>' : ''}
-                  ${linkedLogin ? `<span class="chip bg-purple-100 text-purple-700" title="Usuario con acceso: ${escapeAttr(linkedLogin.username)}">🔑 ${escapeHtml(linkedLogin.username)}</span>` : ''}
-                  ${m.email ? '<span class="chip bg-gray-100 text-gray-700">✉</span>' : ''}
+                  ${hasLogin ? `<span class="chip bg-purple-100 text-purple-700" title="Email: ${escapeAttr(m.email)}">🔑 ${escapeHtml(m.email)}</span>` : ''}
                 </div>
                 <div class="text-xs text-gray-500">${m.email ? escapeHtml(m.email) + ' · ' : ''}${tasks} tarea${tasks!==1?'s':''} activa${tasks!==1?'s':''}</div>
               </div>
@@ -1808,7 +1808,7 @@ function renderTeam() {
           `;
         }).join('')}
       </div>
-      <p class="text-xs text-gray-500">En comentarios escribí <b>@Nombre</b> para notificar a un miembro. El 🔑 indica que el miembro tiene acceso por login.</p>
+      <p class="text-xs text-gray-500">En comentarios escribí <b>@Nombre</b> para notificar a un miembro. El 🔑 indica el email asociado a su login (Supabase Auth).</p>
 
       ${renderEmailSettings()}
       ${renderFinanceSettings()}
@@ -1819,16 +1819,15 @@ function renderTeam() {
 
 function renderSecuritySettings() {
   return `
-    <div class="card p-5 border border-red-100">
+    <div class="card p-5">
       <h3 class="font-semibold mb-1">Seguridad de sesiones</h3>
-      <p class="text-xs text-gray-500 mb-4">Cerrar todas las sesiones abiertas si sospechás que alguien no autorizado tiene la app abierta.</p>
-      <button onclick="kickAllSessions()" class="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition flex items-center gap-2">
-        ⚠ Cerrar sesión en todos los dispositivos
-      </button>
-      <p class="text-[11px] text-gray-500 mt-3">
-        Esto te va a desloguear inmediatamente a vos también (te pide login de nuevo).
-        Cualquier persona que tenga la app abierta en otro dispositivo va a ser kickeada en ~1-2 segundos.
-      </p>
+      <p class="text-xs text-gray-500 mb-3">Login gestionado por <b>Supabase Auth</b>. Las contraseñas viven encriptadas en Supabase, no en este HTML.</p>
+      <div class="space-y-2 text-xs text-gray-600">
+        <div><b>Para cambiar tu contraseña:</b> Supabase Dashboard → Authentication → Users → click en el usuario → "Send password recovery"</div>
+        <div><b>Para agregar un usuario:</b> Supabase Dashboard → Authentication → Users → "Add user" → email + contraseña. Después agregalo al MEMBER_MAP del HTML si querés mapearlo a un miembro existente.</div>
+        <div><b>Para sacar a alguien del sistema:</b> Supabase Dashboard → Authentication → Users → click en el usuario → "Delete user". Pierde acceso inmediatamente.</div>
+        <div><b>Para forzar logout de todos:</b> Supabase Dashboard → Authentication → Sessions → "Sign out all users". Tienen que volver a loguearse.</div>
+      </div>
     </div>
   `;
 }
@@ -2031,12 +2030,6 @@ function testEmail() {
     });
 }
 
-function setCurrentMember(id) {
-  currentMemberId = id;
-  localStorage.setItem('pragma_current_member', id);
-  renderNav(); render();
-}
-
 function openMemberModal(id) {
   const m = id ? getMember(id) : { id: null, name: '', email: '', color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6,'0') };
   openModal(`
@@ -2079,10 +2072,9 @@ function deleteMember(id) {
   const m = getMember(id);
   if (!m) return;
   const activeTasks = state.tasks.filter(t => t.assigneeId === id && t.status !== 'COMPLETED').length;
-  const linkedLogin = LOGIN_USERS.find(u => u.memberId === id);
   let warning = `¿Eliminar a ${m.name}?`;
   if (activeTasks > 0) warning += `\n\n${activeTasks} tarea${activeTasks>1?'s':''} activa${activeTasks>1?'s':''} queda${activeTasks>1?'n':''} sin asignar.`;
-  if (linkedLogin) warning += `\n\n⚠ ${m.name} tiene login activo (${linkedLogin.username}). Si se loguea de nuevo, se va a re-crear el miembro automáticamente. Para evitarlo, sacá también la entrada de LOGIN_USERS en el HTML.`;
+  if (m.email) warning += `\n\n⚠ ${m.name} tiene email asociado (${m.email}). Si vuelve a loguearse con ese email, se va a re-crear el miembro. Para evitarlo, borrá también el usuario desde Supabase → Authentication → Users.`;
   if (!confirm(warning)) return;
 
   state.members = state.members.filter(m => m.id !== id);
@@ -2097,19 +2089,24 @@ function deleteMember(id) {
 }
 
 function openMemberPicker() {
+  const me = currentMember();
+  const auth = getAuthUser();
   openModal(`
     <div class="p-6">
-      <h2 class="text-xl font-semibold mb-4">¿Quién sos?</h2>
-      <div class="space-y-2">
-        ${state.members.map(m => `
-          <button onclick="closeModal(); setCurrentMember('${m.id}')" class="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 border ${m.id === currentMemberId ? 'border-blue-300 bg-blue-50' : 'border-gray-200'}">
-            <span class="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
-            <span class="font-medium">${escapeHtml(m.name)}</span>
-            ${m.id === currentMemberId ? '<span class="ml-auto chip bg-blue-100 text-blue-700">Actual</span>' : ''}
-          </button>
-        `).join('')}
+      <h2 class="text-xl font-semibold mb-2">Tu sesión</h2>
+      ${me ? `
+        <div class="flex items-center gap-3 p-3 rounded-lg bg-gray-50 mb-4">
+          <span class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold" style="background:${me.color}">${escapeHtml(me.name[0])}</span>
+          <div class="flex-1">
+            <div class="font-medium">${escapeHtml(me.name)}</div>
+            <div class="text-xs text-gray-500">${escapeHtml(auth?.email || me.email || '')}</div>
+          </div>
+        </div>
+      ` : ''}
+      <div class="flex flex-col gap-2">
+        <button class="btn-ghost w-full text-sm" onclick="closeModal(); go('team')">Administrar equipo</button>
+        <button class="btn-ghost w-full text-sm text-red-600" onclick="closeModal(); logout()">⏏ Cerrar sesión</button>
       </div>
-      <button class="btn-ghost w-full mt-3 text-sm" onclick="closeModal(); go('team')">Administrar equipo</button>
     </div>
   `);
 }
@@ -4219,23 +4216,10 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ============ BOOT ============
-// Si hay sesión guardada, restaurar el currentMemberId desde la auth
-(function restoreAuthIdentity() {
-  const auth = getAuthUser();
-  if (auth && auth.memberId) {
-    currentMemberId = auth.memberId;
-    localStorage.setItem('pragma_current_member', auth.memberId);
-    // Asegurar que el miembro existe (puede haberse borrado por accidente)
-    const u = LOGIN_USERS.find(x => x.memberId === auth.memberId);
-    if (u && !state.members.find(m => m.id === u.memberId)) {
-      state.members.push({ id: u.memberId, name: u.name, color: u.color });
-    }
-  }
-})();
-
+// Mostrar overlay de login por defecto hasta que Supabase confirme sesión
+renderLoginOverlay();
 renderNav();
 render();
-renderLoginOverlay();
 
 // Migración: si todavía tenés la plantilla vieja redundante, pasala a la nueva
 (function migratePaymentTemplate() {
