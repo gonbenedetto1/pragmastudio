@@ -2879,6 +2879,51 @@ function monthBalance(month) {
 
 function setFinanceMode(m) { financeMode = m; render(); }
 
+function getDisplayYear() {
+  if (financeMode === 'year') return Number(financeYear);
+  if (financeMode === 'range') return Number((financeFrom || todayISO()).slice(0,4));
+  return Number((financeMonth || todayISO()).slice(0,4));
+}
+
+function navYear(delta) {
+  const y = getDisplayYear() + delta;
+  if (financeMode === 'year') {
+    financeYear = String(y);
+  } else if (financeMode === 'month') {
+    const mm = financeMonth.slice(5, 7);
+    financeMonth = `${y}-${mm}`;
+  } else if (financeMode === 'range') {
+    // Shift range by 1 year
+    const shiftDate = (d) => {
+      const [yy, mm, dd] = d.split('-');
+      return `${Number(yy)+delta}-${mm}-${dd}`;
+    };
+    if (financeFrom) financeFrom = shiftDate(financeFrom);
+    if (financeTo)   financeTo   = shiftDate(financeTo);
+    financeYear = String(y);
+  }
+  render();
+}
+
+function selectFinanceMonth(monthKey) {
+  financeMode = 'month';
+  financeMonth = monthKey;
+  render();
+}
+
+function openRangePickerInline() {
+  if (financeMode === 'range') {
+    // Si ya estaba activo, vuelvo al mes actual
+    financeMode = 'month';
+  } else {
+    financeMode = 'range';
+    // Inicializar rango si no estaba
+    if (!financeFrom) financeFrom = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0,10);
+    if (!financeTo) financeTo = todayISO();
+  }
+  render();
+}
+
 function renderFinance() {
   const { from, to, label } = getFinanceRange();
   const baseCur = state.defaultCurrency || 'ARS';
@@ -2984,6 +3029,9 @@ function renderFinance() {
     return [...yrs].sort((a,b) => b-a);
   })();
 
+  const displayYear = getDisplayYear();
+  const showPending = financeMode === 'month';  // pending solo en vista mes
+
   return `
     <div class="px-4 md:px-10 pt-8 md:pt-10 pb-4">
       <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
@@ -2997,48 +3045,60 @@ function renderFinance() {
         </div>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2">
-        <div class="flex gap-1 bg-gray-100 rounded-lg p-1">
-          <button class="px-3 py-1 rounded-md text-sm ${financeMode==='month'?'bg-white shadow-sm font-medium':''}" onclick="setFinanceMode('month')">Mes</button>
-          <button class="px-3 py-1 rounded-md text-sm ${financeMode==='year'?'bg-white shadow-sm font-medium':''}" onclick="setFinanceMode('year')">Año</button>
-          <button class="px-3 py-1 rounded-md text-sm ${financeMode==='range'?'bg-white shadow-sm font-medium':''}" onclick="setFinanceMode('range')">Rango</button>
+      <div class="space-y-2">
+        <!-- Año navigation + USD chip -->
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="flex items-center gap-0.5 bg-gray-100 rounded-lg p-1">
+            <button onclick="navYear(-1)" class="px-2 py-1 rounded-md hover:bg-white transition text-sm">‹</button>
+            <span class="px-2 text-sm font-semibold min-w-[50px] text-center">${displayYear}</span>
+            <button onclick="navYear(1)" class="px-2 py-1 rounded-md hover:bg-white transition text-sm">›</button>
+          </div>
+          <button onclick="setFinanceMode('year')" class="px-3 py-1.5 rounded-lg text-sm ${financeMode==='year'?'bg-black text-white':'bg-gray-100 text-gray-700 hover:bg-gray-200'} transition">Año completo</button>
+          <button onclick="openRangePickerInline()" class="px-3 py-1.5 rounded-lg text-sm ${financeMode==='range'?'bg-black text-white':'bg-gray-100 text-gray-700 hover:bg-gray-200'} transition">Rango custom</button>
+
+          <span class="hidden sm:inline text-gray-300">·</span>
+          <button onclick="openExchangeRateModal()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-black hover:bg-gray-50 transition text-sm" title="${state.exchangeRateSource === 'bluelytics' ? 'Dólar blue auto · Bluelytics' : 'Cotización del dólar'}">
+            ${state.exchangeRateSource === 'bluelytics' ? '<span class="w-2 h-2 rounded-full bg-green-500"></span>' : ''}
+            <span class="text-gray-500 text-xs">${state.exchangeRateSource === 'bluelytics' ? 'Blue' : 'USD'}</span>
+            <span class="font-semibold">$${(state.exchangeRate || 1200).toLocaleString('es-AR')}</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-gray-400"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+          </button>
         </div>
 
-        ${financeMode === 'month' ? `
-          <input type="month" class="input max-w-[170px]" value="${financeMonth}" onchange="financeMonth=this.value; render()" />
-        ` : ''}
-        ${financeMode === 'year' ? `
-          <select class="input max-w-[120px]" onchange="financeYear=this.value; render()">
-            ${allYears.map(y => `<option value="${y}" ${String(y)===financeYear?'selected':''}>${y}</option>`).join('')}
-          </select>
-        ` : ''}
-        ${financeMode === 'range' ? `
-          <input type="date" class="input max-w-[150px]" value="${financeFrom}" onchange="financeFrom=this.value; render()" />
-          <span class="text-gray-400 text-sm">→</span>
-          <input type="date" class="input max-w-[150px]" value="${financeTo}" onchange="financeTo=this.value; render()" />
-        ` : ''}
+        <!-- Month pills (Ene-Dic) -->
+        <div class="flex flex-wrap gap-1">
+          ${MONTH_NAMES_SHORT.map((mName, idx) => {
+            const mNum = String(idx+1).padStart(2,'0');
+            const mKey = `${displayYear}-${mNum}`;
+            const active = financeMode === 'month' && financeMonth === mKey;
+            const isCurrent = mKey === new Date().toISOString().slice(0,7);
+            return `<button onclick="selectFinanceMonth('${mKey}')" class="px-3 py-1.5 rounded-md text-sm transition ${active?'bg-black text-white':isCurrent?'bg-blue-50 text-blue-700 hover:bg-blue-100':'bg-gray-100 text-gray-700 hover:bg-gray-200'}">${mName}</button>`;
+          }).join('')}
+        </div>
 
-        <span class="hidden sm:inline text-gray-300">·</span>
-        <button onclick="openExchangeRateModal()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-black hover:bg-gray-50 transition text-sm" title="${state.exchangeRateSource === 'bluelytics' ? 'Dólar blue auto · Bluelytics' : 'Cotización del dólar'}">
-          ${state.exchangeRateSource === 'bluelytics' ? '<span class="w-2 h-2 rounded-full bg-green-500" title="Auto-actualizado"></span>' : ''}
-          <span class="text-gray-500 text-xs">${state.exchangeRateSource === 'bluelytics' ? 'Blue' : 'USD'}</span>
-          <span class="font-semibold">$${(state.exchangeRate || 1200).toLocaleString('es-AR')}</span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-gray-400"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
-        </button>
+        <!-- Range picker inline (visible only in range mode) -->
+        ${financeMode === 'range' ? `
+          <div class="flex flex-wrap items-center gap-2 pt-1">
+            <span class="text-xs text-gray-500 uppercase tracking-wider">Rango:</span>
+            <input type="date" class="input max-w-[150px]" value="${financeFrom}" onchange="financeFrom=this.value; render()" />
+            <span class="text-gray-400 text-sm">→</span>
+            <input type="date" class="input max-w-[150px]" value="${financeTo}" onchange="financeTo=this.value; render()" />
+          </div>
+        ` : ''}
       </div>
     </div>
 
     <div class="px-4 md:px-10 pb-10 space-y-4 md:space-y-6">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         <div class="card p-4 md:p-5">
-          <div class="text-xs text-gray-500">Ingresos</div>
+          <div class="text-xs text-gray-500">${showPending ? 'Cobrado' : 'Ingresos'}</div>
           <div class="text-xl md:text-2xl font-semibold text-green-700">${fmtAmount(incTotalConfirmed, baseCur)}</div>
-          ${incTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(incTotalPending, baseCur)} pendiente</div>` : ''}
+          ${showPending && incTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(incTotalPending, baseCur)} esperado este mes</div>` : ''}
         </div>
         <div class="card p-4 md:p-5">
-          <div class="text-xs text-gray-500">Gastos</div>
+          <div class="text-xs text-gray-500">${showPending ? 'Pagado' : 'Gastos'}</div>
           <div class="text-xl md:text-2xl font-semibold text-red-600">${fmtAmount(expTotalPaid, baseCur)}</div>
-          ${expTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(expTotalPending, baseCur)} pendiente</div>` : ''}
+          ${showPending && expTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(expTotalPending, baseCur)} esperado este mes</div>` : ''}
         </div>
         <div class="card p-4 md:p-5">
           <div class="text-xs text-gray-500">Balance</div>
@@ -3186,9 +3246,9 @@ function renderFinance() {
                   <td class="px-3 py-3 text-right text-red-600">${fmtAmount(expTotalPaid, baseCur)}</td>
                   <td colspan="2" class="px-3 md:px-5 py-3 text-right ${balance>=0?'text-green-700':'text-red-600'}">${fmtAmount(balance, baseCur)}</td>
                 </tr>
-                ${(incTotalPending > 0 || expTotalPending > 0) ? `
+                ${showPending && (incTotalPending > 0 || expTotalPending > 0) ? `
                   <tr class="text-amber-700">
-                    <td colspan="2" class="px-3 md:px-5 py-2 text-right text-xs uppercase tracking-wider">Pendiente</td>
+                    <td colspan="2" class="px-3 md:px-5 py-2 text-right text-xs uppercase tracking-wider">Esperado este mes</td>
                     <td class="px-3 py-2 text-right">${incTotalPending > 0 ? '+' + fmtAmount(incTotalPending, baseCur) : '—'}</td>
                     <td class="px-3 py-2 text-right">${expTotalPending > 0 ? fmtAmount(expTotalPending, baseCur) : '—'}</td>
                     <td colspan="2"></td>
