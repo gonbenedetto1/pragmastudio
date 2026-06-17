@@ -2262,6 +2262,85 @@ function prevMonthKey(monthStr) {
   return `${prevY}-${String(prevM).padStart(2,'0')}`;
 }
 
+// ---- Cash-flow: lista todos los pagos con su fecha real (no la fecha del item original) ----
+function getAllCashFlowPayments(kind) {
+  const out = [];
+
+  if (kind === 'income') {
+    // Pagos parciales explícitos sobre ingresos manuales
+    (state.incomePayments || []).forEach(p => {
+      const inc = state.incomes.find(i => i.id === p.incomeId);
+      if (!inc) return;
+      out.push({
+        amount: Number(p.amount) || 0,
+        currency: inc.currency || 'ARS',
+        date: (p.date || p.paidAt || '').slice(0, 10),
+        exchangeRate: p.exchangeRate || inc.exchangeRateAtTime || state.exchangeRate,
+      });
+    });
+    // Pagos sobre mensualidades recurrentes
+    (state.recurringChargeLog || []).forEach(r => {
+      const proj = getProject(r.projectId);
+      if (!proj) return;
+      const amount = r.amount != null ? Number(r.amount) : Number(proj.monthlyFee || 0);
+      out.push({
+        amount,
+        currency: proj.monthlyFeeCurrency || 'ARS',
+        date: (r.chargedAt || '').slice(0, 10),
+        exchangeRate: r.exchangeRate || state.exchangeRate,
+      });
+    });
+    // Sintético: ingresos confirmados sin payment log (back-compat)
+    state.incomes.forEach(i => {
+      if ((state.incomePayments || []).some(p => p.incomeId === i.id)) return;
+      if ((i.status || 'CONFIRMED') !== 'CONFIRMED') return;
+      out.push({
+        amount: Number(i.amount) || 0,
+        currency: i.currency || 'ARS',
+        date: (i.confirmedAt || i.date || '').slice(0, 10),
+        exchangeRate: i.exchangeRateAtTime || state.exchangeRate,
+      });
+    });
+  } else {
+    // Pagos sobre gastos manuales
+    (state.expensePayments || []).forEach(p => {
+      const exp = state.expenses.find(e => e.id === p.expenseId);
+      if (!exp) return;
+      out.push({
+        amount: Number(p.amount) || 0,
+        currency: exp.currency || 'ARS',
+        date: (p.date || p.paidAt || '').slice(0, 10),
+        exchangeRate: p.exchangeRate || exp.exchangeRateAtTime || state.exchangeRate,
+      });
+    });
+    // Pagos sobre gastos fijos recurrentes
+    (state.recurringExpensePayments || []).forEach(r => {
+      const exp = state.expenses.find(e => e.id === r.expenseId);
+      if (!exp) return;
+      const amount = r.amount != null ? Number(r.amount) : Number(exp.amount || 0);
+      out.push({
+        amount,
+        currency: exp.currency || 'ARS',
+        date: (r.paidAt || '').slice(0, 10),
+        exchangeRate: r.exchangeRate || state.exchangeRate,
+      });
+    });
+    // Sintético: gastos pagados sin payment log
+    state.expenses.forEach(e => {
+      if ((state.expensePayments || []).some(p => p.expenseId === e.id)) return;
+      if ((e.status || 'PAID') !== 'PAID') return;
+      out.push({
+        amount: Number(e.amount) || 0,
+        currency: e.currency || 'ARS',
+        date: (e.paidAt || e.date || '').slice(0, 10),
+        exchangeRate: e.exchangeRateAtTime || state.exchangeRate,
+      });
+    });
+  }
+
+  return out;
+}
+
 function getCarryOversForMonth(viewedMonth) {
   const incomes = [];
   const prevM = prevMonthKey(viewedMonth);
@@ -2971,11 +3050,22 @@ function renderFinance() {
     return s.status === 'PAID';
   };
 
-  const incTotalConfirmed = incWithKind.reduce((a, b) => a + paidPart(b), 0);
+  // ===== Cash-flow real: cobrado/pagado se cuenta en el mes en que se hizo el pago =====
+  const allIncomeCashFlow = getAllCashFlowPayments('income');
+  const allExpenseCashFlow = getAllCashFlowPayments('expense');
+
+  const sumCashIn = (payments) => payments.reduce((sum, p) =>
+    sum + convertAt(p.amount, p.currency, baseCur, p.exchangeRate), 0
+  );
+
+  // Total cobrado/pagado = suma de pagos cuya FECHA cae en el rango visto
+  const incTotalConfirmed = sumCashIn(allIncomeCashFlow.filter(p => p.date && inRange(p.date, from, to)));
+  const expTotalPaid      = sumCashIn(allExpenseCashFlow.filter(p => p.date && inRange(p.date, from, to)));
+
+  // Pendiente: lo que falta cobrar/pagar (solo se muestra en vista Mes)
   const incTotalPending = incWithKind.reduce((a, b) => a + pendingPart(b), 0);
-  const incTotal = incTotalConfirmed + incTotalPending;
-  const expTotalPaid = expWithKind.reduce((a, b) => a + paidPart(b), 0);
   const expTotalPending = expWithKind.reduce((a, b) => a + pendingPart(b), 0);
+  const incTotal = incTotalConfirmed + incTotalPending;
   const expTotal = expTotalPaid + expTotalPending;
   const balance = incTotalConfirmed - expTotalPaid;
   const margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
@@ -2984,24 +3074,9 @@ function renderFinance() {
   const monthsInRange = monthsBetween(from, to);
   const showBreakdown = monthsInRange.length > 1;
   const monthlyData = showBreakdown ? monthsInRange.map(m => {
-    const monthIncomes = [
-      ...state.incomes.filter(i => i.date && i.date.startsWith(m)).map(i => ({...i, _kind:'income'})),
-      ...getAutoIncomes(m),
-    ];
-    const monthExpenses = [
-      ...state.expenses.filter(x => x.date && x.date.startsWith(m)).map(e => ({...e, _kind:'expense'})),
-      ...getAutoExpenses(m),
-    ];
-    const i = monthIncomes.reduce((a, b) => {
-      const s = getPaymentSummary(b);
-      const ratio = s.expected > 0 ? s.totalPaid / s.expected : 0;
-      return a + toBaseCurrencyForItem(b, baseCur) * ratio;
-    }, 0);
-    const e = monthExpenses.reduce((a, b) => {
-      const s = getPaymentSummary(b);
-      const ratio = s.expected > 0 ? s.totalPaid / s.expected : 0;
-      return a + toBaseCurrencyForItem(b, baseCur) * ratio;
-    }, 0);
+    // Cash flow real: pagos con fecha en este mes
+    const i = sumCashIn(allIncomeCashFlow.filter(p => p.date && p.date.startsWith(m)));
+    const e = sumCashIn(allExpenseCashFlow.filter(p => p.date && p.date.startsWith(m)));
     return { month: m, income: i, expense: e, balance: i - e };
   }) : [];
   const maxAbs = Math.max(1, ...monthlyData.map(d => Math.max(d.income, d.expense)));
