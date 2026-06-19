@@ -3148,32 +3148,39 @@ function getAllCashFlowPayments(kind) {
   return out.filter(p => p.date);
 }
 
+// Arrastres encadenados: una vez parcial, se sigue mostrando en cada mes
+// posterior hasta que se cobre 100%. Si no cobrás en junio → julio sigue
+// mostrándolo. Si tampoco en julio → agosto. Y así.
+// Sólo aplica en vista Mes; en Año/Rango no se muestra para no duplicar.
 function getCarryOversForMonth(viewedMonth) {
   const incomes = [];
-  const prevM = prevMonthKey(viewedMonth);
 
-  // Manual incomes del mes anterior con saldo parcial
+  // Manual incomes anteriores con saldo parcial
   state.incomes.forEach(i => {
     if (!i.date) return;
-    if (i.date.slice(0, 7) !== prevM) return;
+    const m = i.date.slice(0, 7);
+    if (m >= viewedMonth) return;
     const tmp = { ...i, _kind: 'income' };
     const sum = getPaymentSummary(tmp);
     if (sum.status !== 'PARTIAL') return;
-    incomes.push({ ...i, _kind: 'income', _carryOver: true, _carryOverFrom: prevM, _carryOverRemaining: sum.remaining });
+    incomes.push({ ...i, _kind: 'income', _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
   });
 
-  // Recurring incomes (mensualidades) parciales del mes anterior solamente
+  // Recurring incomes (mensualidades) parciales de meses anteriores
   state.projects.forEach(p => {
     if (p.status !== 'ACTIVE_RECURRING' || !p.monthlyFee) return;
     const start = (p.startDate || '').slice(0, 7);
-    if (!start || start > prevM) return;
+    if (!start) return;
     const end = (p.endDate || '').slice(0, 7);
-    if (end && prevM > end) return;
-    const autoInc = getAutoIncomes(prevM).find(x => x.projectId === p.id);
-    if (!autoInc) return;
-    const sum = getPaymentSummary(autoInc);
-    if (sum.status !== 'PARTIAL') return;
-    incomes.push({ ...autoInc, _carryOver: true, _carryOverFrom: prevM, _carryOverRemaining: sum.remaining });
+    monthsBetween(start + '-01', viewedMonth + '-01').forEach(m => {
+      if (m >= viewedMonth) return;
+      if (end && m > end) return;
+      const autoInc = getAutoIncomes(m).find(x => x.projectId === p.id);
+      if (!autoInc) return;
+      const sum = getPaymentSummary(autoInc);
+      if (sum.status !== 'PARTIAL') return;
+      incomes.push({ ...autoInc, _carryOver: true, _carryOverFrom: m, _carryOverRemaining: sum.remaining });
+    });
   });
 
   return { incomes, expenses: [] };
@@ -3369,9 +3376,10 @@ function renderPaymentsModal() {
           <div>
             <label class="text-xs text-gray-500">Monto en <b>${cur}</b></label>
             <div class="relative">
-              <input id="paymentAmountInput" type="number" step="0.01" name="amount" class="input pr-12" required value="${s.remaining || ''}" />
+              <input id="paymentAmountInput" type="number" step="0.01" name="amount" class="input pr-12" required value="${s.remaining || ''}" oninput="updatePaymentConversionPreview()" />
               <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-semibold pointer-events-none">${cur}</span>
             </div>
+            <div id="paymentConversionPreview" class="text-[11px] text-blue-700 mt-1 font-medium min-h-[16px]"></div>
           </div>
           <div>
             <label class="text-xs text-gray-500">Fecha del pago</label>
@@ -3398,11 +3406,37 @@ function renderPaymentsModal() {
       </form>
     </div>
   `);
+
+  // Mostrar la conversión apenas se abre, así detectás si la moneda está mal
+  setTimeout(() => updatePaymentConversionPreview(), 30);
 }
 
 function setPaymentAmount(amount) {
   const inp = document.getElementById('paymentAmountInput');
   if (inp) inp.value = Number(amount).toFixed(2);
+  updatePaymentConversionPreview();
+}
+
+// Live preview: muestra la conversión a la otra moneda al cambio actual
+// para que el usuario detecte si está cargando en la moneda equivocada
+function updatePaymentConversionPreview() {
+  if (!_currentPaymentsItem) return;
+  const inp = document.getElementById('paymentAmountInput');
+  const preview = document.getElementById('paymentConversionPreview');
+  if (!inp || !preview) return;
+  const amount = Number(inp.value) || 0;
+  if (amount <= 0) { preview.textContent = ''; return; }
+  const cur = _currentPaymentsItem.currency || 'ARS';
+  const rate = Number(state.exchangeRate) || 1200;
+  if (cur === 'USD') {
+    const ars = amount * rate;
+    preview.innerHTML = `≈ $${ars.toLocaleString('es-AR', {maximumFractionDigits: 0})} ARS <span class="text-gray-400 font-normal">(al cambio actual $${rate.toLocaleString('es-AR')})</span>`;
+  } else if (cur === 'ARS') {
+    const usd = amount / rate;
+    preview.innerHTML = `≈ US$${usd.toLocaleString('es-AR', {maximumFractionDigits: 2})} USD <span class="text-gray-400 font-normal">(al cambio actual $${rate.toLocaleString('es-AR')})</span>`;
+  } else {
+    preview.textContent = '';
+  }
 }
 
 function submitPayment(e) {
