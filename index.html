@@ -210,6 +210,7 @@ const DEFAULT_STATE = {
   exchangeRate: 1200,             // ARS por USD
   exchangeRateSource: 'manual',   // 'manual' | 'blue' | 'oficial' | 'mep' | 'cripto' | 'tarjeta'
   exchangeRateUpdatedAt: null,
+  budgets: [],                    // Presupuestos: { id, code, clientName, category, pricingModel, currency, status, items, riskFactors, contingencyPct, ... }
 };
 
 const INCOME_STATUS = {
@@ -578,6 +579,155 @@ const PROJECT_STATUS = {
 };
 const PROJECT_STATUS_ORDER = ['LEAD','POSSIBLE','IN_DEVELOPMENT','ACTIVE_RECURRING','PAUSED','DONE','ARCHIVED'];
 
+// ============ PRESUPUESTOS ============
+const BUDGET_STATUS = {
+  DRAFT:    { label: 'Borrador',  color: 'bg-gray-100 text-gray-700' },
+  SENT:     { label: 'Enviado',   color: 'bg-blue-100 text-blue-700' },
+  ACCEPTED: { label: 'Aceptado',  color: 'bg-green-100 text-green-700' },
+  REJECTED: { label: 'Rechazado', color: 'bg-red-100 text-red-700' },
+  EXPIRED:  { label: 'Vencido',   color: 'bg-amber-100 text-amber-700' },
+};
+const BUDGET_STATUS_ORDER = ['DRAFT','SENT','ACCEPTED','REJECTED','EXPIRED'];
+
+const BUDGET_CATEGORIES = [
+  { key: 'ERP',         label: 'Implementación ERP',      defaultPricing: 'IMPL_PLUS_MAINT' },
+  { key: 'CRM',         label: 'CRM',                      defaultPricing: 'IMPL_PLUS_MAINT' },
+  { key: 'ECOMMERCE',   label: 'Ecommerce',                defaultPricing: 'IMPL_PLUS_MAINT' },
+  { key: 'AUTOMATION',  label: 'Automatizaciones',         defaultPricing: 'FIXED' },
+  { key: 'INTEGRATION', label: 'Integraciones',            defaultPricing: 'FIXED' },
+  { key: 'AI',          label: 'Inteligencia Artificial',  defaultPricing: 'EVOLUTIVE' },
+  { key: 'WEB',         label: 'Desarrollo Web',           defaultPricing: 'FIXED' },
+  { key: 'MOBILE',      label: 'Desarrollo Mobile',        defaultPricing: 'FIXED' },
+  { key: 'CUSTOM',      label: 'Desarrollo a Medida',      defaultPricing: 'EVOLUTIVE' },
+  { key: 'CONSULTING',  label: 'Consultoría',              defaultPricing: 'HOUR_BUCKET' },
+];
+
+const PRICING_MODELS = [
+  { key: 'FIXED',          label: 'Precio fijo',                       minMargin: 40, targetMargin: 52 },
+  { key: 'HOUR_BUCKET',    label: 'Bolsa de horas / T&M',              minMargin: 45, targetMargin: 55 },
+  { key: 'SUBSCRIPTION',   label: 'Suscripción mensual',               minMargin: 55, targetMargin: 70 },
+  { key: 'IMPL_PLUS_MAINT',label: 'Implementación + mantenimiento',    minMargin: 40, targetMargin: 52 },
+  { key: 'EVOLUTIVE',      label: 'Desarrollo evolutivo',              minMargin: 45, targetMargin: 55 },
+];
+
+const COMPLEXITY_LEVELS = [
+  { key: 'VERY_SIMPLE',  label: 'Muy simple',   min: 1,  max: 4,   default: 2,   devSenior: false },
+  { key: 'SIMPLE',       label: 'Simple',       min: 5,  max: 16,  default: 10,  devSenior: false },
+  { key: 'MEDIUM',       label: 'Media',        min: 17, max: 40,  default: 28,  devSenior: false },
+  { key: 'COMPLEX',      label: 'Compleja',     min: 41, max: 80,  default: 60,  devSenior: true  },
+  { key: 'VERY_COMPLEX', label: 'Muy compleja', min: 81, max: 160, default: 120, devSenior: true  },
+];
+
+const RISK_FACTORS_LIST = [
+  { id: 'INTEGRATION', label: 'Integración con terceros',           min: 0.15, max: 0.30, def: 0.20 },
+  { id: 'UNKNOWN_API', label: 'API desconocida / sin documentación',min: 0.20, max: 0.40, def: 0.30 },
+  { id: 'LEGACY',      label: 'Sistema legacy',                     min: 0.25, max: 0.50, def: 0.35 },
+  { id: 'URGENT',      label: 'Plazo urgente',                      min: 0.20, max: 0.40, def: 0.30 },
+  { id: 'UNCLEAR_REQ', label: 'Requerimientos poco definidos',      min: 0.20, max: 0.50, def: 0.30 },
+  { id: 'CLIENT_DEP',  label: 'Dependencia del cliente',            min: 0.10, max: 0.25, def: 0.15 },
+  { id: 'DATA_MIG',    label: 'Migración de datos',                 min: 0.15, max: 0.35, def: 0.25 },
+  { id: 'AI',          label: 'Inteligencia Artificial',            min: 0.30, max: 0.60, def: 0.45 },
+];
+
+const ROLE_RATES = {
+  FUNCTIONAL: { cost: 12, sale: 35 },
+  UX:         { cost: 12, sale: 35 },
+  DEV_JR:     { cost: 9,  sale: 28 },
+  DEV_SSR:    { cost: 15, sale: 42 },
+  DEV_SR:     { cost: 22, sale: 60 },
+  QA:         { cost: 11, sale: 32 },
+  PM:         { cost: 18, sale: 50 },
+  AI:         { cost: 28, sale: 75 },
+};
+
+const DISCIPLINE_PCT = {
+  functional: 0.25,
+  ux:         0.15,
+  qa:         0.20,
+  training:   0.07,
+  docs:       0.07,
+  pm:         0.15,
+};
+
+// Motor de estimación: dada la spec del presupuesto, calcula horas/costo/precio/margen
+function estimateBudget(budget) {
+  const items = (budget.items || []).map(item => {
+    const complexity = COMPLEXITY_LEVELS.find(c => c.key === item.complexity) || COMPLEXITY_LEVELS[2];
+    const hoursDev = Number(item.hoursDev) || complexity.default;
+
+    const hoursFunctional = hoursDev * DISCIPLINE_PCT.functional;
+    const hoursUX         = hoursDev * DISCIPLINE_PCT.ux;
+    const hoursQA         = hoursDev * DISCIPLINE_PCT.qa;
+    const hoursTraining   = hoursDev * DISCIPLINE_PCT.training;
+    const hoursDocs       = hoursDev * DISCIPLINE_PCT.docs;
+    const techSubtotal    = hoursFunctional + hoursUX + hoursDev + hoursQA + hoursTraining + hoursDocs;
+    const hoursPM         = techSubtotal * DISCIPLINE_PCT.pm;
+    const itemHours       = techSubtotal + hoursPM;
+
+    const isAI    = budget.category === 'AI';
+    const devRate = isAI ? ROLE_RATES.AI : (complexity.devSenior ? ROLE_RATES.DEV_SR : ROLE_RATES.DEV_SSR);
+
+    const cost =
+      hoursFunctional * ROLE_RATES.FUNCTIONAL.cost +
+      hoursUX         * ROLE_RATES.UX.cost +
+      hoursDev        * devRate.cost +
+      hoursQA         * ROLE_RATES.QA.cost +
+      hoursTraining   * ROLE_RATES.FUNCTIONAL.cost +
+      hoursDocs       * ROLE_RATES.FUNCTIONAL.cost +
+      hoursPM         * ROLE_RATES.PM.cost;
+
+    const revenue =
+      hoursFunctional * ROLE_RATES.FUNCTIONAL.sale +
+      hoursUX         * ROLE_RATES.UX.sale +
+      hoursDev        * devRate.sale +
+      hoursQA         * ROLE_RATES.QA.sale +
+      hoursTraining   * ROLE_RATES.FUNCTIONAL.sale +
+      hoursDocs       * ROLE_RATES.FUNCTIONAL.sale +
+      hoursPM         * ROLE_RATES.PM.sale;
+
+    return { ...item, hoursDev, hoursFunctional, hoursUX, hoursQA, hoursTraining, hoursDocs, hoursPM, itemHours, cost, revenue };
+  });
+
+  const totalByDiscipline = {
+    functional: items.reduce((a,b) => a + b.hoursFunctional, 0),
+    ux:         items.reduce((a,b) => a + b.hoursUX, 0),
+    dev:        items.reduce((a,b) => a + b.hoursDev, 0),
+    qa:         items.reduce((a,b) => a + b.hoursQA, 0),
+    training:   items.reduce((a,b) => a + b.hoursTraining, 0),
+    docs:       items.reduce((a,b) => a + b.hoursDocs, 0),
+    pm:         items.reduce((a,b) => a + b.hoursPM, 0),
+  };
+
+  const baseHours   = items.reduce((a,b) => a + b.itemHours, 0);
+  const baseCost    = items.reduce((a,b) => a + b.cost, 0);
+  const baseRevenue = items.reduce((a,b) => a + b.revenue, 0);
+
+  const activeRisks = budget.riskFactors || [];
+  const riskSum = Math.min(1.0, activeRisks.reduce((sum, r) => {
+    const factor = RISK_FACTORS_LIST.find(f => f.id === r.id);
+    return sum + (Number(r.value) || factor?.def || 0);
+  }, 0));
+
+  const contingency = (Number(budget.contingencyPct) || 12) / 100;
+  const multiplier  = (1 + riskSum) * (1 + contingency);
+  const finalHours   = baseHours   * multiplier;
+  const finalCost    = baseCost    * multiplier;
+  const finalRevenue = baseRevenue * multiplier;
+  const margin = finalRevenue > 0 ? ((finalRevenue - finalCost) / finalRevenue) * 100 : 0;
+
+  const pricingModel = PRICING_MODELS.find(p => p.key === budget.pricingModel) || PRICING_MODELS[0];
+  let marginStatus = 'red';
+  if (margin >= pricingModel.targetMargin) marginStatus = 'green';
+  else if (margin >= pricingModel.minMargin) marginStatus = 'yellow';
+
+  return {
+    items, totalByDiscipline,
+    baseHours, finalHours, baseCost, finalCost, baseRevenue, finalRevenue,
+    margin, marginStatus, riskSum, contingencyPct: contingency * 100,
+    minMargin: pricingModel.minMargin, targetMargin: pricingModel.targetMargin, pricingModel,
+  };
+}
+
 const PROJECT_TYPE = {
   SYSTEM: { label: 'Sistema', hint: 'Mensualidad' },
   WEB:    { label: 'Web',     hint: 'Inicio/fin' },
@@ -739,10 +889,11 @@ function dropProject(e, status) {
 
 // ============ NAV ============
 const NAV = [
-  { key: 'tasks',     label: 'Tareas',     icon: '☰' },
-  { key: 'projects',  label: 'Proyectos',  icon: '◫' },
-  { key: 'finance',   label: 'Finanzas',   icon: '$' },
-  { key: 'reports',   label: 'Reportes',   icon: '◈' },
+  { key: 'tasks',     label: 'Tareas',      icon: '☰' },
+  { key: 'projects',  label: 'Proyectos',   icon: '◫' },
+  { key: 'budgets',   label: 'Presupuestos',icon: '$' },
+  { key: 'finance',   label: 'Finanzas',    icon: '◷' },
+  { key: 'reports',   label: 'Reportes',    icon: '◈' },
   { key: 'documents', label: 'Documentos', icon: '▤' },
   { key: 'resources', label: 'Recursos',   icon: '◇' },
   { key: 'team',      label: 'Equipo',     icon: '◐' },
@@ -794,6 +945,7 @@ function render() {
   const views = {
     tasks: renderTasks,
     projects: renderProjects,
+    budgets: renderBudgets,
     finance: renderFinance,
     reports: renderReports,
     documents: renderDocuments,
@@ -1773,6 +1925,438 @@ function deleteResource(id) {
   if (!confirm('¿Eliminar recurso?')) return;
   state.resources = state.resources.filter(r => r.id !== id);
   save(); closeModal(); render();
+}
+
+// ============ PRESUPUESTOS ============
+let budgetsFilterStatus = '';
+
+function renderBudgets() {
+  const all = (state.budgets || []);
+  const filtered = budgetsFilterStatus
+    ? all.filter(b => b.status === budgetsFilterStatus)
+    : all;
+  const sorted = filtered.slice().sort((a,b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+  const totalBudgets = all.length;
+  const sent = all.filter(b => b.status === 'SENT').length;
+  const accepted = all.filter(b => b.status === 'ACCEPTED').length;
+  const pipelineUSD = all.reduce((sum, b) => {
+    if (b.status === 'REJECTED' || b.status === 'EXPIRED') return sum;
+    const est = estimateBudget(b);
+    const rate = Number(state.exchangeRate) || 1200;
+    const usd = b.currency === 'ARS' ? est.finalRevenue / rate : est.finalRevenue;
+    return sum + usd;
+  }, 0);
+  const closeRate = sent + accepted > 0 ? Math.round(accepted / (sent + accepted) * 100) : 0;
+
+  return `
+    ${viewHeader('Presupuestos', `${totalBudgets} en total`,
+      `<button class="btn-primary" onclick="openBudgetModal()">+ Nuevo presupuesto</button>`)}
+
+    <div class="px-4 md:px-10 pb-10 space-y-4">
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="card p-4"><div class="text-xs text-gray-500">Total</div><div class="text-2xl font-semibold">${totalBudgets}</div></div>
+        <div class="card p-4"><div class="text-xs text-gray-500">Enviados</div><div class="text-2xl font-semibold">${sent}</div></div>
+        <div class="card p-4"><div class="text-xs text-gray-500">Aceptados</div><div class="text-2xl font-semibold text-green-700">${accepted}</div><div class="text-[11px] text-gray-500">${closeRate}% tasa cierre</div></div>
+        <div class="card p-4"><div class="text-xs text-gray-500">Pipeline (USD)</div><div class="text-2xl font-semibold">US$${pipelineUSD.toLocaleString('es-AR',{maximumFractionDigits:0})}</div></div>
+      </div>
+
+      <div class="flex flex-wrap gap-2">
+        <button onclick="budgetsFilterStatus=''; render()" class="chip ${budgetsFilterStatus===''?'bg-black text-white':'bg-gray-100 text-gray-700'} py-1.5 px-3 cursor-pointer">Todos (${totalBudgets})</button>
+        ${BUDGET_STATUS_ORDER.map(k => {
+          const n = all.filter(b => b.status === k).length;
+          if (n === 0) return '';
+          const s = BUDGET_STATUS[k];
+          return `<button onclick="budgetsFilterStatus='${k}'; render()" class="chip ${budgetsFilterStatus===k?'bg-black text-white':s.color} py-1.5 px-3 cursor-pointer">${s.label} (${n})</button>`;
+        }).join('')}
+      </div>
+
+      ${sorted.length === 0 ? `
+        <div class="card p-10 text-center text-gray-400">
+          ${totalBudgets === 0 ? 'Sin presupuestos. Creá el primero.' : 'Nada en esta categoría.'}
+        </div>
+      ` : `
+        <div class="card divide-y divide-gray-100">
+          ${sorted.map(b => budgetRow(b)).join('')}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function budgetRow(b) {
+  const est = estimateBudget(b);
+  const status = BUDGET_STATUS[b.status] || BUDGET_STATUS.DRAFT;
+  const category = BUDGET_CATEGORIES.find(c => c.key === b.category);
+  const marginColors = { green: 'text-green-700', yellow: 'text-amber-700', red: 'text-red-600' };
+  const d = b.createdAt ? new Date(b.createdAt) : null;
+  return `
+    <div class="p-4 hover:bg-gray-50 cursor-pointer flex items-center gap-3" onclick="openBudgetModal('${b.id}')">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-medium">${escapeHtml(b.clientName || 'Sin cliente')}</span>
+          <span class="chip ${status.color}">${status.label}</span>
+        </div>
+        <div class="text-xs text-gray-500 mt-0.5 truncate">
+          ${b.code || ''} · ${category?.label || ''} · ${(b.items || []).length} módulo${(b.items||[]).length!==1?'s':''} · ${est.finalHours.toFixed(0)}h
+          ${d ? ' · ' + d.toLocaleDateString('es-AR') : ''}
+        </div>
+      </div>
+      <div class="text-right">
+        <div class="font-semibold">${fmtAmount(est.finalRevenue, b.currency || 'USD')}</div>
+        <div class="text-xs ${marginColors[est.marginStatus]} font-medium">${est.margin.toFixed(0)}% margen</div>
+      </div>
+    </div>
+  `;
+}
+
+let _budgetItemCounter = 0;
+
+function openBudgetModal(id) {
+  const existing = id ? (state.budgets || []).find(x => x.id === id) : null;
+  const b = existing ? structuredClone(existing) : {
+    id: null,
+    code: `PRES-${new Date().getFullYear()}-${String(((state.budgets || []).length + 1)).padStart(4, '0')}`,
+    clientName: '',
+    category: 'WEB',
+    pricingModel: 'FIXED',
+    currency: 'USD',
+    status: 'DRAFT',
+    items: [],
+    riskFactors: [],
+    contingencyPct: 12,
+    notes: '',
+  };
+
+  _budgetItemCounter = 0;
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-xl font-semibold">${id ? 'Editar presupuesto' : 'Nuevo presupuesto'}</h2>
+          <p class="text-xs text-gray-500">${b.code}</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      <form id="budgetForm" oninput="updateBudgetLivePreview()" onsubmit="saveBudget(event)" class="space-y-5">
+        <input type="hidden" name="id" value="${b.id || ''}" />
+        <input type="hidden" name="code" value="${escapeAttr(b.code)}" />
+
+        <!-- 1. Datos básicos -->
+        <section>
+          <h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">1. Datos básicos</h3>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="col-span-2">
+              <label class="text-xs text-gray-500">Cliente</label>
+              <input name="clientName" required class="input" value="${escapeAttr(b.clientName)}" placeholder="Ej: Galo Wines" />
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Categoría</label>
+              <select name="category" class="input">
+                ${BUDGET_CATEGORIES.map(c => `<option value="${c.key}" ${b.category===c.key?'selected':''}>${c.label}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Modalidad de cobro</label>
+              <select name="pricingModel" class="input">
+                ${PRICING_MODELS.map(p => `<option value="${p.key}" ${b.pricingModel===p.key?'selected':''}>${p.label}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Moneda</label>
+              <select name="currency" class="input">
+                <option value="USD" ${b.currency==='USD'?'selected':''}>USD</option>
+                <option value="ARS" ${b.currency==='ARS'?'selected':''}>ARS</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Estado</label>
+              <select name="status" class="input">
+                ${BUDGET_STATUS_ORDER.map(k => `<option value="${k}" ${b.status===k?'selected':''}>${BUDGET_STATUS[k].label}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. Módulos -->
+        <section>
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold">2. Módulos / Requerimientos</h3>
+            <button type="button" onclick="addBudgetItem()" class="text-sm text-blue-600 hover:underline">+ Agregar módulo</button>
+          </div>
+          <div id="budgetItemsList" class="space-y-2">
+            ${(b.items || []).map((it) => budgetItemHTML(it)).join('') || '<div class="text-sm text-gray-400 italic">Sin módulos. Click en "+ Agregar módulo" para empezar.</div>'}
+          </div>
+        </section>
+
+        <!-- 3. Riesgos -->
+        <section>
+          <h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">3. Factores de riesgo</h3>
+          <p class="text-[11px] text-gray-500 mb-2">Tildá los que apliquen y elegí el % dentro del rango sugerido.</p>
+          <div class="space-y-1 max-h-60 overflow-y-auto border border-gray-100 rounded-lg p-2">
+            ${RISK_FACTORS_LIST.map(r => {
+              const active = (b.riskFactors || []).find(x => x.id === r.id);
+              const val = active?.value ?? r.def;
+              const options = [...new Set([r.min, r.def, r.max])];
+              return `
+                <label class="flex items-center gap-2 text-sm p-1.5 hover:bg-gray-50 rounded">
+                  <input type="checkbox" name="risk_${r.id}" ${active?'checked':''} class="w-4 h-4" />
+                  <span class="flex-1">${r.label}</span>
+                  <span class="text-[10px] text-gray-400 mr-1">+${Math.round(r.min*100)}–${Math.round(r.max*100)}%</span>
+                  <select name="riskval_${r.id}" class="input max-w-[80px] text-xs py-1">
+                    ${options.map(v => `<option value="${v}" ${val==v?'selected':''}>+${Math.round(v*100)}%</option>`).join('')}
+                  </select>
+                </label>
+              `;
+            }).join('')}
+          </div>
+        </section>
+
+        <!-- 4. Contingencia -->
+        <section>
+          <h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">4. Contingencia</h3>
+          <div class="flex items-center gap-3">
+            <input type="range" name="contingencyPct" min="10" max="20" step="1" value="${b.contingencyPct}" class="flex-1" oninput="document.getElementById('contLabel').textContent = this.value + '%'" />
+            <span id="contLabel" class="text-sm font-semibold min-w-[50px] text-right">${b.contingencyPct}%</span>
+          </div>
+          <p class="text-[11px] text-gray-500 mt-1">10-15% para alcance maduro, 16-20% si hay incertidumbre.</p>
+        </section>
+
+        <!-- 5. Notas -->
+        <section>
+          <label class="text-xs text-gray-500">Notas internas (no salen al cliente)</label>
+          <textarea name="notes" class="input" rows="2">${escapeHtml(b.notes || '')}</textarea>
+        </section>
+
+        <!-- LIVE PREVIEW -->
+        <div id="budgetLivePreview" class="rounded-xl border-2 border-black p-5 bg-gray-50 sticky bottom-0"></div>
+
+        <div class="flex justify-between items-center pt-3 border-t border-gray-100">
+          <div>${id ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteBudget('${id}')">Eliminar</button>` : ''}</div>
+          <div class="flex gap-2">
+            <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn-primary">${id ? 'Guardar cambios' : 'Crear presupuesto'}</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  `);
+
+  setTimeout(() => updateBudgetLivePreview(), 30);
+}
+
+function budgetItemHTML(it) {
+  const idx = _budgetItemCounter++;
+  const complexity = it.complexity || 'MEDIUM';
+  const cmpx = COMPLEXITY_LEVELS.find(c => c.key === complexity) || COMPLEXITY_LEVELS[2];
+  const hoursDev = it.hoursDev || cmpx.default;
+  return `
+    <div class="border border-gray-200 rounded-lg p-3 space-y-2 bg-white" data-item-idx="${idx}">
+      <div class="flex items-center gap-2">
+        <input name="item_title_${idx}" required class="input flex-1" placeholder="Ej: Módulo de facturación" value="${escapeAttr(it.title || '')}" />
+        <button type="button" onclick="removeBudgetItem(${idx})" class="text-red-500 hover:bg-red-50 p-1.5 rounded text-sm" title="Eliminar módulo">✕</button>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[10px] text-gray-500 uppercase tracking-wider">Complejidad</label>
+          <select name="item_complexity_${idx}" class="input text-sm" onchange="autoFillHours(${idx}, this.value); updateBudgetLivePreview()">
+            ${COMPLEXITY_LEVELS.map(c => `<option value="${c.key}" ${complexity===c.key?'selected':''}>${c.label} (${c.min}–${c.max}h)</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="text-[10px] text-gray-500 uppercase tracking-wider">Horas dev</label>
+          <input type="number" step="1" min="1" name="item_hours_${idx}" class="input text-sm" value="${hoursDev}" />
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function addBudgetItem() {
+  const list = document.getElementById('budgetItemsList');
+  if (!list) return;
+  // Si tenía el placeholder italic, limpiar
+  if (list.querySelector('.italic')) list.innerHTML = '';
+  list.insertAdjacentHTML('beforeend', budgetItemHTML({}));
+  updateBudgetLivePreview();
+}
+
+function removeBudgetItem(idx) {
+  const el = document.querySelector(`[data-item-idx="${idx}"]`);
+  if (el) el.remove();
+  updateBudgetLivePreview();
+}
+
+function autoFillHours(idx, complexityKey) {
+  const c = COMPLEXITY_LEVELS.find(x => x.key === complexityKey);
+  if (!c) return;
+  const inp = document.querySelector(`input[name="item_hours_${idx}"]`);
+  if (inp) inp.value = c.default;
+}
+
+function collectBudgetFromForm() {
+  const form = document.getElementById('budgetForm');
+  if (!form) return null;
+  const fd = new FormData(form);
+
+  const items = [];
+  document.querySelectorAll('#budgetItemsList [data-item-idx]').forEach(el => {
+    const idx = el.dataset.itemIdx;
+    items.push({
+      title: fd.get(`item_title_${idx}`) || '',
+      complexity: fd.get(`item_complexity_${idx}`) || 'MEDIUM',
+      hoursDev: Number(fd.get(`item_hours_${idx}`)) || 0,
+    });
+  });
+
+  const riskFactors = RISK_FACTORS_LIST
+    .filter(r => fd.get(`risk_${r.id}`) === 'on')
+    .map(r => ({ id: r.id, value: Number(fd.get(`riskval_${r.id}`)) || r.def }));
+
+  return {
+    id: fd.get('id') || null,
+    code: fd.get('code') || '',
+    clientName: fd.get('clientName') || '',
+    category: fd.get('category') || 'WEB',
+    pricingModel: fd.get('pricingModel') || 'FIXED',
+    currency: fd.get('currency') || 'USD',
+    status: fd.get('status') || 'DRAFT',
+    items,
+    riskFactors,
+    contingencyPct: Number(fd.get('contingencyPct')) || 12,
+    notes: fd.get('notes') || '',
+  };
+}
+
+function updateBudgetLivePreview() {
+  const b = collectBudgetFromForm();
+  if (!b) return;
+  const est = estimateBudget(b);
+  const preview = document.getElementById('budgetLivePreview');
+  if (!preview) return;
+
+  const marginColors = { green: 'text-green-700', yellow: 'text-amber-700', red: 'text-red-600' };
+  const marginBg     = { green: 'bg-green-50 border-green-300', yellow: 'bg-amber-50 border-amber-300', red: 'bg-red-50 border-red-300' };
+  const statusIcons = {
+    green:  '✓ Margen objetivo alcanzado',
+    yellow: '⚠ Margen mínimo cumplido, sin colchón',
+    red:    '✕ Margen bajo el mínimo — requiere override de Dirección',
+  };
+
+  preview.innerHTML = `
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-semibold flex items-center gap-2">📊 Resumen en vivo</h3>
+      <span class="text-xs text-gray-500">${est.pricingModel.label}</span>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Horas totales</div>
+        <div class="text-xl font-bold">${est.finalHours.toFixed(0)}h</div>
+        <div class="text-[10px] text-gray-500">base ${est.baseHours.toFixed(0)}h</div>
+      </div>
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Costo interno</div>
+        <div class="text-xl font-bold text-red-600">${fmtAmount(est.finalCost, b.currency)}</div>
+      </div>
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Precio de venta</div>
+        <div class="text-xl font-bold text-green-700">${fmtAmount(est.finalRevenue, b.currency)}</div>
+      </div>
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Margen</div>
+        <div class="text-xl font-bold ${marginColors[est.marginStatus]}">${est.margin.toFixed(1)}%</div>
+        <div class="text-[10px] text-gray-500">mín ${est.minMargin}% / obj ${est.targetMargin}%</div>
+      </div>
+    </div>
+
+    ${b.items.length > 0 ? `
+      <div class="border ${marginBg[est.marginStatus]} ${marginColors[est.marginStatus]} text-xs font-medium px-3 py-2 rounded-lg mb-3">
+        ${statusIcons[est.marginStatus]}
+      </div>
+    ` : ''}
+
+    ${(est.riskSum > 0 || est.contingencyPct > 0) && b.items.length > 0 ? `
+      <div class="text-xs text-gray-600 mb-2">
+        Multiplicadores:
+        ${est.riskSum > 0 ? `<span class="font-medium">+${(est.riskSum*100).toFixed(0)}% riesgo</span>` : ''}
+        ${est.riskSum > 0 && est.contingencyPct > 0 ? ' · ' : ''}
+        ${est.contingencyPct > 0 ? `<span class="font-medium">+${est.contingencyPct.toFixed(0)}% contingencia</span>` : ''}
+      </div>
+    ` : ''}
+
+    ${est.riskSum >= 1.0 ? `
+      <div class="bg-red-50 border border-red-200 rounded-lg p-2 text-xs text-red-800 mb-3">
+        ⚠ Riesgo total = 100%. La política dice que con este nivel no debería ser precio fijo. Considerá Discovery/PoC o T&M con tope.
+      </div>
+    ` : ''}
+
+    ${b.items.length === 0 ? '<div class="text-sm text-gray-400 italic">Agregá al menos un módulo para ver el cálculo</div>' : `
+      <details class="text-xs mt-2">
+        <summary class="cursor-pointer text-gray-600 hover:text-gray-900 select-none">Ver desglose por disciplina</summary>
+        <div class="mt-2 grid grid-cols-2 gap-x-4">
+          ${[
+            ['Funcional', est.totalByDiscipline.functional],
+            ['UX/UI', est.totalByDiscipline.ux],
+            ['Desarrollo', est.totalByDiscipline.dev],
+            ['QA / Testing', est.totalByDiscipline.qa],
+            ['Capacitación', est.totalByDiscipline.training],
+            ['Documentación', est.totalByDiscipline.docs],
+            ['Project Mgmt', est.totalByDiscipline.pm],
+          ].map(([label, h]) => `
+            <div class="flex justify-between border-b border-gray-200 py-1">
+              <span>${label}</span>
+              <span class="font-medium">${h.toFixed(1)}h</span>
+            </div>
+          `).join('')}
+        </div>
+      </details>
+    `}
+  `;
+}
+
+function saveBudget(e) {
+  e.preventDefault();
+  const b = collectBudgetFromForm();
+  if (!b) return;
+  if (b.items.length === 0) {
+    if (!confirm('No agregaste ningún módulo. ¿Guardar igual?')) return;
+  }
+
+  state.budgets = state.budgets || [];
+
+  if (b.id) {
+    const existing = state.budgets.find(x => x.id === b.id);
+    if (existing) {
+      Object.assign(existing, b, { updatedAt: new Date().toISOString() });
+    }
+  } else {
+    state.budgets.push({
+      ...b,
+      id: uid(),
+      createdAt: new Date().toISOString(),
+      createdBy: currentMemberId,
+    });
+  }
+
+  save();
+  closeModal();
+  render();
+  showToast('Presupuesto guardado', 'success');
+}
+
+function deleteBudget(id) {
+  const b = (state.budgets || []).find(x => x.id === id);
+  if (!b) return;
+  if (!confirm(`¿Eliminar el presupuesto "${b.clientName}"?\n\nEsta acción no se puede deshacer.`)) return;
+  state.budgets = state.budgets.filter(x => x.id !== id);
+  save();
+  closeModal();
+  render();
+  showToast('Presupuesto eliminado', 'success');
 }
 
 // ============ TEAM ============
