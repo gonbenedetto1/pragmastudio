@@ -2267,78 +2267,79 @@ function getAllCashFlowPayments(kind) {
   const out = [];
 
   if (kind === 'income') {
-    // Pagos parciales explícitos sobre ingresos manuales
+    // 1. Pagos explícitos sobre ingresos manuales
     (state.incomePayments || []).forEach(p => {
       const inc = state.incomes.find(i => i.id === p.incomeId);
       if (!inc) return;
       out.push({
         amount: Number(p.amount) || 0,
-        currency: inc.currency || 'ARS',
+        currency: p.currency || inc.currency || 'ARS',
         date: (p.date || p.paidAt || '').slice(0, 10),
-        exchangeRate: p.exchangeRate || inc.exchangeRateAtTime || state.exchangeRate,
+        exchangeRate: Number(p.exchangeRate) || Number(inc.exchangeRateAtTime) || Number(state.exchangeRate) || 1200,
       });
     });
-    // Pagos sobre mensualidades recurrentes
+    // 2. Pagos sobre mensualidades recurrentes (cobros)
     (state.recurringChargeLog || []).forEach(r => {
       const proj = getProject(r.projectId);
       if (!proj) return;
       const amount = r.amount != null ? Number(r.amount) : Number(proj.monthlyFee || 0);
       out.push({
         amount,
-        currency: proj.monthlyFeeCurrency || 'ARS',
-        date: (r.chargedAt || '').slice(0, 10),
-        exchangeRate: r.exchangeRate || state.exchangeRate,
+        currency: r.currency || proj.monthlyFeeCurrency || 'ARS',
+        date: (r.date || r.chargedAt || '').slice(0, 10),       // ← prefiere r.date
+        exchangeRate: Number(r.exchangeRate) || Number(state.exchangeRate) || 1200,
       });
     });
-    // Sintético: ingresos confirmados sin payment log (back-compat)
+    // 3. Sintético: ingresos confirmados sin payment log (back-compat con data vieja)
     state.incomes.forEach(i => {
       if ((state.incomePayments || []).some(p => p.incomeId === i.id)) return;
       if ((i.status || 'CONFIRMED') !== 'CONFIRMED') return;
       out.push({
         amount: Number(i.amount) || 0,
         currency: i.currency || 'ARS',
-        date: (i.confirmedAt || i.date || '').slice(0, 10),
-        exchangeRate: i.exchangeRateAtTime || state.exchangeRate,
+        date: ((i.confirmedAt && i.confirmedAt.slice(0,10)) || i.date || '').slice(0, 10),
+        exchangeRate: Number(i.exchangeRateAtTime) || Number(state.exchangeRate) || 1200,
       });
     });
   } else {
-    // Pagos sobre gastos manuales
+    // 1. Pagos explícitos sobre gastos manuales
     (state.expensePayments || []).forEach(p => {
       const exp = state.expenses.find(e => e.id === p.expenseId);
       if (!exp) return;
       out.push({
         amount: Number(p.amount) || 0,
-        currency: exp.currency || 'ARS',
+        currency: p.currency || exp.currency || 'ARS',
         date: (p.date || p.paidAt || '').slice(0, 10),
-        exchangeRate: p.exchangeRate || exp.exchangeRateAtTime || state.exchangeRate,
+        exchangeRate: Number(p.exchangeRate) || Number(exp.exchangeRateAtTime) || Number(state.exchangeRate) || 1200,
       });
     });
-    // Pagos sobre gastos fijos recurrentes
+    // 2. Pagos sobre gastos fijos recurrentes
     (state.recurringExpensePayments || []).forEach(r => {
       const exp = state.expenses.find(e => e.id === r.expenseId);
       if (!exp) return;
       const amount = r.amount != null ? Number(r.amount) : Number(exp.amount || 0);
       out.push({
         amount,
-        currency: exp.currency || 'ARS',
-        date: (r.paidAt || '').slice(0, 10),
-        exchangeRate: r.exchangeRate || state.exchangeRate,
+        currency: r.currency || exp.currency || 'ARS',
+        date: (r.date || r.paidAt || '').slice(0, 10),          // ← prefiere r.date
+        exchangeRate: Number(r.exchangeRate) || Number(state.exchangeRate) || 1200,
       });
     });
-    // Sintético: gastos pagados sin payment log
+    // 3. Sintético: gastos pagados sin payment log (back-compat con data vieja)
     state.expenses.forEach(e => {
       if ((state.expensePayments || []).some(p => p.expenseId === e.id)) return;
       if ((e.status || 'PAID') !== 'PAID') return;
       out.push({
         amount: Number(e.amount) || 0,
         currency: e.currency || 'ARS',
-        date: (e.paidAt || e.date || '').slice(0, 10),
-        exchangeRate: e.exchangeRateAtTime || state.exchangeRate,
+        date: ((e.paidAt && e.paidAt.slice(0,10)) || e.date || '').slice(0, 10),
+        exchangeRate: Number(e.exchangeRateAtTime) || Number(state.exchangeRate) || 1200,
       });
     });
   }
 
-  return out;
+  // Filtrar entries con fecha vacía (no se pueden ubicar en el tiempo)
+  return out.filter(p => p.date);
 }
 
 function getCarryOversForMonth(viewedMonth) {
@@ -2452,11 +2453,13 @@ function getPaymentChip(item) {
 
 function addPaymentToItem(item, amount, date, note) {
   const rate = Number(state.exchangeRate) || 1200;
+  const userDate = date || todayISO();
   const base = {
     id: uid(),
     amount: Number(amount),
-    date: date || todayISO(),
-    paidAt: new Date().toISOString(),
+    currency: item.currency || 'ARS',           // ← guarda moneda explícita
+    date: userDate,                             // ← fecha que el usuario eligió
+    paidAt: new Date().toISOString(),           // ← timestamp de cuando se registró
     paidBy: currentMemberId,
     exchangeRate: rate,
     exchangeRateSource: state.exchangeRateSource || 'manual',
@@ -2466,9 +2469,9 @@ function addPaymentToItem(item, amount, date, note) {
   if (item.auto && item.sourceExpenseId) {
     state.recurringExpensePayments.push({ ...base, expenseId: item.sourceExpenseId, month: item.month });
   } else if (item.auto) {
-    state.recurringChargeLog.push({ ...base, projectId: item.projectId, month: item.month, chargedAt: base.paidAt, chargedBy: base.paidBy });
+    // chargedAt = user-chosen date (no el timestamp). El timestamp queda en paidAt.
+    state.recurringChargeLog.push({ ...base, projectId: item.projectId, month: item.month, chargedAt: userDate, chargedBy: currentMemberId });
   } else if (item._kind === 'income') {
-    // Si era 'PENDING' o nuevo, asegurar status
     const real = state.incomes.find(x => x.id === item.id);
     if (real) real.status = 'CONFIRMED';
     state.incomePayments.push({ ...base, incomeId: item.id });
@@ -2558,14 +2561,18 @@ function renderPaymentsModal() {
       <form onsubmit="submitPayment(event)" class="space-y-3">
         <div class="grid grid-cols-2 gap-2">
           <div>
-            <label class="text-xs text-gray-500">Monto (${cur})</label>
-            <input id="paymentAmountInput" type="number" step="0.01" name="amount" class="input" required value="${s.remaining || ''}" />
+            <label class="text-xs text-gray-500">Monto en <b>${cur}</b></label>
+            <div class="relative">
+              <input id="paymentAmountInput" type="number" step="0.01" name="amount" class="input pr-12" required value="${s.remaining || ''}" />
+              <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-semibold pointer-events-none">${cur}</span>
+            </div>
           </div>
           <div>
-            <label class="text-xs text-gray-500">Fecha</label>
+            <label class="text-xs text-gray-500">Fecha del pago</label>
             <input type="date" name="date" class="input" value="${todayISO()}" />
           </div>
         </div>
+        <p class="text-[11px] text-gray-500">⚠ El monto se cuenta en <b>${cur}</b>. Si el cobro real fue en ${cur==='USD'?'pesos':'dólares'}, convertilo a ${cur} antes de cargarlo.</p>
         <div>
           <label class="text-xs text-gray-500">Nota (opcional)</label>
           <input type="text" name="note" class="input" placeholder="Ej: 1er adelanto, transferencia, etc." />
