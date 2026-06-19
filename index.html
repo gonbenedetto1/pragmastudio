@@ -603,12 +603,96 @@ const BUDGET_CATEGORIES = [
 ];
 
 const PRICING_MODELS = [
-  { key: 'FIXED',          label: 'Precio fijo',                       minMargin: 40, targetMargin: 52 },
-  { key: 'HOUR_BUCKET',    label: 'Bolsa de horas / T&M',              minMargin: 45, targetMargin: 55 },
-  { key: 'SUBSCRIPTION',   label: 'Suscripción mensual',               minMargin: 55, targetMargin: 70 },
-  { key: 'IMPL_PLUS_MAINT',label: 'Implementación + mantenimiento',    minMargin: 40, targetMargin: 52 },
-  { key: 'EVOLUTIVE',      label: 'Desarrollo evolutivo',              minMargin: 45, targetMargin: 55 },
+  { key: 'FIXED',          label: 'Precio fijo',                       minMargin: 40, targetMargin: 52,
+    description: 'Cobrás un monto cerrado al firmar. El cliente sabe exactamente cuánto va a pagar. Ideal cuando el alcance está claro y acotado.' },
+  { key: 'HOUR_BUCKET',    label: 'Bolsa de horas / T&M',              minMargin: 45, targetMargin: 55,
+    description: 'Cliente compra un paquete de horas y se consumen. Para soporte continuo o cuando el alcance va a cambiar.' },
+  { key: 'SUBSCRIPTION',   label: 'Suscripción mensual',               minMargin: 55, targetMargin: 70,
+    description: 'Solo cobrás mensual recurrente, sin desarrollo inicial. Para SaaS o cuando todo es uso continuo del producto.' },
+  { key: 'IMPL_PLUS_MAINT',label: 'Implementación + mantenimiento',    minMargin: 40, targetMargin: 52,
+    description: 'Un monto inicial por el desarrollo + mensual por soporte y mejoras. Lo más recomendado para sistemas (ERP/CRM).' },
+  { key: 'EVOLUTIVE',      label: 'Desarrollo evolutivo',              minMargin: 45, targetMargin: 55,
+    description: 'Cobrás por sprint o iteración sobre un backlog priorizado. Cliente paga por avance. Ideal para productos a largo plazo.' },
 ];
+
+// Sugerencias de módulos típicos por categoría (clickeables al armar el presupuesto)
+const COMMON_MODULES_BY_CATEGORY = {
+  ERP: [
+    { title: 'Login y gestión de usuarios',  complexity: 'SIMPLE' },
+    { title: 'Dashboard con métricas',        complexity: 'MEDIUM' },
+    { title: 'ABM de clientes',               complexity: 'SIMPLE' },
+    { title: 'ABM de productos',              complexity: 'SIMPLE' },
+    { title: 'Módulo de facturación',         complexity: 'COMPLEX' },
+    { title: 'Gestión de stock',              complexity: 'MEDIUM' },
+    { title: 'Reportes y exportación',        complexity: 'MEDIUM' },
+    { title: 'Integración con AFIP',          complexity: 'COMPLEX' },
+  ],
+  CRM: [
+    { title: 'Login y usuarios',              complexity: 'SIMPLE' },
+    { title: 'Pipeline de oportunidades',     complexity: 'MEDIUM' },
+    { title: 'Gestión de leads',              complexity: 'SIMPLE' },
+    { title: 'Email tracking',                complexity: 'COMPLEX' },
+    { title: 'Dashboard de ventas',           complexity: 'MEDIUM' },
+    { title: 'Integración con WhatsApp',      complexity: 'COMPLEX' },
+  ],
+  WEB: [
+    { title: 'Landing page principal',        complexity: 'SIMPLE' },
+    { title: 'Sección "Quiénes somos"',       complexity: 'VERY_SIMPLE' },
+    { title: 'Catálogo de productos/servicios',complexity: 'MEDIUM' },
+    { title: 'Formulario de contacto',        complexity: 'VERY_SIMPLE' },
+    { title: 'Blog / noticias',               complexity: 'SIMPLE' },
+    { title: 'SEO básico + Analytics',        complexity: 'SIMPLE' },
+  ],
+  ECOMMERCE: [
+    { title: 'Catálogo con filtros',          complexity: 'MEDIUM' },
+    { title: 'Carrito de compras',            complexity: 'MEDIUM' },
+    { title: 'Checkout + pasarela de pagos',  complexity: 'COMPLEX' },
+    { title: 'Panel administrativo',          complexity: 'COMPLEX' },
+    { title: 'Gestión de envíos',             complexity: 'MEDIUM' },
+    { title: 'Sincronización con stock',      complexity: 'MEDIUM' },
+  ],
+  MOBILE: [
+    { title: 'Login con autenticación',       complexity: 'MEDIUM' },
+    { title: 'Onboarding del usuario',        complexity: 'SIMPLE' },
+    { title: 'Pantallas principales',         complexity: 'MEDIUM' },
+    { title: 'Notificaciones push',           complexity: 'COMPLEX' },
+    { title: 'Publicación en App/Play Store', complexity: 'SIMPLE' },
+  ],
+  AUTOMATION: [
+    { title: 'Workflow de aprobación',        complexity: 'MEDIUM' },
+    { title: 'Integración entre apps',        complexity: 'COMPLEX' },
+    { title: 'Notificaciones automáticas',    complexity: 'SIMPLE' },
+    { title: 'Reportes automáticos',          complexity: 'MEDIUM' },
+  ],
+  INTEGRATION: [
+    { title: 'Integración con AFIP',          complexity: 'COMPLEX' },
+    { title: 'Pasarela de pagos',             complexity: 'COMPLEX' },
+    { title: 'WhatsApp Business API',         complexity: 'COMPLEX' },
+    { title: 'Google Calendar / Sheets',      complexity: 'MEDIUM' },
+  ],
+  AI: [
+    { title: 'Chatbot inteligente',           complexity: 'COMPLEX' },
+    { title: 'Análisis de documentos',        complexity: 'COMPLEX' },
+    { title: 'Recomendaciones personalizadas',complexity: 'VERY_COMPLEX' },
+    { title: 'Generación de contenido',       complexity: 'MEDIUM' },
+  ],
+  CUSTOM: [
+    { title: 'Relevamiento de requerimientos',complexity: 'MEDIUM' },
+    { title: 'Arquitectura del sistema',      complexity: 'COMPLEX' },
+    { title: 'Desarrollo del core',           complexity: 'VERY_COMPLEX' },
+  ],
+  CONSULTING: [
+    { title: 'Jornada de consultoría',        complexity: 'SIMPLE' },
+    { title: 'Auditoría técnica',             complexity: 'MEDIUM' },
+    { title: 'Plan de mejora',                complexity: 'MEDIUM' },
+  ],
+};
+
+function getBudgetCategories(b) {
+  if (Array.isArray(b.categories) && b.categories.length) return b.categories;
+  if (b.category) return [b.category];
+  return ['WEB'];
+}
 
 const COMPLEXITY_LEVELS = [
   { key: 'VERY_SIMPLE',  label: 'Muy simple',   min: 1,  max: 4,   default: 2,   devSenior: false },
@@ -629,15 +713,17 @@ const RISK_FACTORS_LIST = [
   { id: 'AI',          label: 'Inteligencia Artificial',            min: 0.30, max: 0.60, def: 0.45 },
 ];
 
+// Rates calibradas para studio con IA (Cursor, Claude, Vercel, Supabase).
+// Productividad ~3x sobre tradicional → costo efectivo bajo, sale rate competitivo.
 const ROLE_RATES = {
-  FUNCTIONAL: { cost: 12, sale: 35 },
-  UX:         { cost: 12, sale: 35 },
-  DEV_JR:     { cost: 9,  sale: 28 },
-  DEV_SSR:    { cost: 15, sale: 42 },
-  DEV_SR:     { cost: 22, sale: 60 },
-  QA:         { cost: 11, sale: 32 },
-  PM:         { cost: 18, sale: 50 },
-  AI:         { cost: 28, sale: 75 },
+  FUNCTIONAL: { cost: 5,  sale: 22 },
+  UX:         { cost: 5,  sale: 22 },
+  DEV_JR:     { cost: 4,  sale: 18 },
+  DEV_SSR:    { cost: 7,  sale: 28 },
+  DEV_SR:     { cost: 12, sale: 40 },
+  QA:         { cost: 4,  sale: 18 },
+  PM:         { cost: 9,  sale: 32 },
+  AI:         { cost: 15, sale: 50 },
 };
 
 const DISCIPLINE_PCT = {
@@ -651,6 +737,7 @@ const DISCIPLINE_PCT = {
 
 // Motor de estimación: dada la spec del presupuesto, calcula horas/costo/precio/margen
 function estimateBudget(budget) {
+  const cats = getBudgetCategories(budget);
   const items = (budget.items || []).map(item => {
     const complexity = COMPLEXITY_LEVELS.find(c => c.key === item.complexity) || COMPLEXITY_LEVELS[2];
     const hoursDev = Number(item.hoursDev) || complexity.default;
@@ -664,7 +751,7 @@ function estimateBudget(budget) {
     const hoursPM         = techSubtotal * DISCIPLINE_PCT.pm;
     const itemHours       = techSubtotal + hoursPM;
 
-    const isAI    = budget.category === 'AI';
+    const isAI    = cats.includes('AI');
     const devRate = isAI ? ROLE_RATES.AI : (complexity.devSenior ? ROLE_RATES.DEV_SR : ROLE_RATES.DEV_SSR);
 
     const cost =
@@ -1988,9 +2075,11 @@ function renderBudgets() {
 function budgetRow(b) {
   const est = estimateBudget(b);
   const status = BUDGET_STATUS[b.status] || BUDGET_STATUS.DRAFT;
-  const category = BUDGET_CATEGORIES.find(c => c.key === b.category);
+  const cats = getBudgetCategories(b);
+  const catLabels = cats.map(k => BUDGET_CATEGORIES.find(c => c.key === k)?.label).filter(Boolean).join(' + ');
   const marginColors = { green: 'text-green-700', yellow: 'text-amber-700', red: 'text-red-600' };
   const d = b.createdAt ? new Date(b.createdAt) : null;
+  const monthlyFee = Number(b.monthlyFee) || 0;
   return `
     <div class="p-4 hover:bg-gray-50 cursor-pointer flex items-center gap-3" onclick="openBudgetModal('${b.id}')">
       <div class="flex-1 min-w-0">
@@ -1999,12 +2088,13 @@ function budgetRow(b) {
           <span class="chip ${status.color}">${status.label}</span>
         </div>
         <div class="text-xs text-gray-500 mt-0.5 truncate">
-          ${b.code || ''} · ${category?.label || ''} · ${(b.items || []).length} módulo${(b.items||[]).length!==1?'s':''} · ${est.finalHours.toFixed(0)}h
+          ${b.code || ''} · ${escapeHtml(catLabels || '—')} · ${(b.items || []).length} módulo${(b.items||[]).length!==1?'s':''} · ${est.finalHours.toFixed(0)}h
           ${d ? ' · ' + d.toLocaleDateString('es-AR') : ''}
         </div>
       </div>
       <div class="text-right">
         <div class="font-semibold">${fmtAmount(est.finalRevenue, b.currency || 'USD')}</div>
+        ${monthlyFee > 0 ? `<div class="text-[11px] text-blue-700 font-medium">+ ${fmtAmount(monthlyFee, b.currency || 'USD')}/mes</div>` : ''}
         <div class="text-xs ${marginColors[est.marginStatus]} font-medium">${est.margin.toFixed(0)}% margen</div>
       </div>
     </div>
@@ -2019,16 +2109,18 @@ function openBudgetModal(id) {
     id: null,
     code: `PRES-${new Date().getFullYear()}-${String(((state.budgets || []).length + 1)).padStart(4, '0')}`,
     clientName: '',
-    category: 'WEB',
+    categories: ['WEB'],
     pricingModel: 'FIXED',
     currency: 'USD',
     status: 'DRAFT',
     items: [],
     riskFactors: [],
     contingencyPct: 12,
+    monthlyFee: 0,
     notes: '',
   };
 
+  const activeCats = getBudgetCategories(b);
   _budgetItemCounter = 0;
 
   openModal(`
@@ -2053,17 +2145,26 @@ function openBudgetModal(id) {
               <label class="text-xs text-gray-500">Cliente</label>
               <input name="clientName" required class="input" value="${escapeAttr(b.clientName)}" placeholder="Ej: Galo Wines" />
             </div>
-            <div>
-              <label class="text-xs text-gray-500">Categoría</label>
-              <select name="category" class="input">
-                ${BUDGET_CATEGORIES.map(c => `<option value="${c.key}" ${b.category===c.key?'selected':''}>${c.label}</option>`).join('')}
-              </select>
+            <div class="col-span-2">
+              <label class="text-xs text-gray-500 mb-1.5 block">Tipo de proyecto <span class="text-gray-400 text-[10px]">(podés elegir más de uno)</span></label>
+              <div class="flex flex-wrap gap-1.5" id="categoryChips">
+                ${BUDGET_CATEGORIES.map(c => {
+                  const checked = activeCats.includes(c.key);
+                  return `
+                    <label class="cursor-pointer">
+                      <input type="checkbox" name="cat_${c.key}" ${checked?'checked':''} class="peer sr-only" onchange="updateBudgetSuggestions(); updateBudgetLivePreview()" />
+                      <span class="chip bg-gray-100 text-gray-700 peer-checked:bg-black peer-checked:text-white hover:bg-gray-200 transition px-3 py-1.5 cursor-pointer inline-block">${c.label}</span>
+                    </label>
+                  `;
+                }).join('')}
+              </div>
             </div>
             <div>
               <label class="text-xs text-gray-500">Modalidad de cobro</label>
-              <select name="pricingModel" class="input">
+              <select name="pricingModel" class="input" onchange="updatePricingDescription(); updateBudgetLivePreview()">
                 ${PRICING_MODELS.map(p => `<option value="${p.key}" ${b.pricingModel===p.key?'selected':''}>${p.label}</option>`).join('')}
               </select>
+              <p id="pricingDesc" class="text-[11px] text-gray-500 mt-1 leading-relaxed">${(PRICING_MODELS.find(p => p.key===b.pricingModel) || PRICING_MODELS[0]).description}</p>
             </div>
             <div>
               <label class="text-xs text-gray-500">Moneda</label>
@@ -2071,9 +2172,7 @@ function openBudgetModal(id) {
                 <option value="USD" ${b.currency==='USD'?'selected':''}>USD</option>
                 <option value="ARS" ${b.currency==='ARS'?'selected':''}>ARS</option>
               </select>
-            </div>
-            <div>
-              <label class="text-xs text-gray-500">Estado</label>
+              <label class="text-xs text-gray-500 mt-3 block">Estado</label>
               <select name="status" class="input">
                 ${BUDGET_STATUS_ORDER.map(k => `<option value="${k}" ${b.status===k?'selected':''}>${BUDGET_STATUS[k].label}</option>`).join('')}
               </select>
@@ -2085,17 +2184,20 @@ function openBudgetModal(id) {
         <section>
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold">2. Módulos / Requerimientos</h3>
-            <button type="button" onclick="addBudgetItem()" class="text-sm text-blue-600 hover:underline">+ Agregar módulo</button>
+            <button type="button" onclick="addBudgetItem()" class="text-sm text-blue-600 hover:underline">+ Módulo en blanco</button>
           </div>
+
+          <div id="budgetSuggestions" class="mb-2"></div>
+
           <div id="budgetItemsList" class="space-y-2">
-            ${(b.items || []).map((it) => budgetItemHTML(it)).join('') || '<div class="text-sm text-gray-400 italic">Sin módulos. Click en "+ Agregar módulo" para empezar.</div>'}
+            ${(b.items || []).map((it) => budgetItemHTML(it)).join('') || '<div class="text-sm text-gray-400 italic" id="budgetItemsEmpty">Sin módulos. Tocá una sugerencia arriba o creá uno en blanco.</div>'}
           </div>
         </section>
 
         <!-- 3. Riesgos -->
         <section>
           <h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">3. Factores de riesgo</h3>
-          <p class="text-[11px] text-gray-500 mb-2">Tildá los que apliquen y elegí el % dentro del rango sugerido.</p>
+          <p class="text-[11px] text-gray-500 mb-2">Tildá los que apliquen. El % se suma a las horas totales.</p>
           <div class="space-y-1 max-h-60 overflow-y-auto border border-gray-100 rounded-lg p-2">
             ${RISK_FACTORS_LIST.map(r => {
               const active = (b.riskFactors || []).find(x => x.id === r.id);
@@ -2118,21 +2220,42 @@ function openBudgetModal(id) {
         <!-- 4. Contingencia -->
         <section>
           <h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">4. Contingencia</h3>
-          <div class="flex items-center gap-3">
-            <input type="range" name="contingencyPct" min="10" max="20" step="1" value="${b.contingencyPct}" class="flex-1" oninput="document.getElementById('contLabel').textContent = this.value + '%'" />
-            <span id="contLabel" class="text-sm font-semibold min-w-[50px] text-right">${b.contingencyPct}%</span>
+          <div class="bg-gray-50 rounded-lg p-3">
+            <div class="flex items-center gap-3 mb-1">
+              <input type="range" name="contingencyPct" min="0" max="30" step="1" value="${b.contingencyPct}" class="flex-1" oninput="document.getElementById('contLabel').textContent = this.value + '%'" />
+              <span id="contLabel" class="text-sm font-bold min-w-[50px] text-right">${b.contingencyPct}%</span>
+            </div>
+            <p class="text-[11px] text-gray-600 leading-relaxed">
+              Es el <b>extra "por las dudas"</b>: cubre lo que no podés prever (cambios menores, errores de estimación, problemas técnicos imprevistos).
+              <br/><b>10-15%</b> si el alcance está bien definido · <b>16-20%</b> si hay incertidumbre.
+            </p>
           </div>
-          <p class="text-[11px] text-gray-500 mt-1">10-15% para alcance maduro, 16-20% si hay incertidumbre.</p>
         </section>
 
-        <!-- 5. Notas -->
+        <!-- 5. Mantenimiento mensual -->
+        <section>
+          <h3 class="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">5. Mantenimiento / Suscripción mensual <span class="text-gray-400 normal-case font-normal">(opcional)</span></h3>
+          <div class="bg-gray-50 rounded-lg p-3">
+            <div class="flex items-center gap-2">
+              <span class="text-sm text-gray-500">${b.currency}</span>
+              <input type="number" name="monthlyFee" min="0" step="1" value="${b.monthlyFee || 0}" class="input flex-1" placeholder="0" />
+              <span class="text-sm text-gray-500">/ mes</span>
+            </div>
+            <p class="text-[11px] text-gray-600 mt-2 leading-relaxed">
+              Si vendés un sistema con cuota recurrente (soporte, mantenimiento, suscripción), ponelo acá.
+              Va separado del precio inicial y aparece en el resumen como ingreso recurrente.
+            </p>
+          </div>
+        </section>
+
+        <!-- 6. Notas -->
         <section>
           <label class="text-xs text-gray-500">Notas internas (no salen al cliente)</label>
           <textarea name="notes" class="input" rows="2">${escapeHtml(b.notes || '')}</textarea>
         </section>
 
-        <!-- LIVE PREVIEW -->
-        <div id="budgetLivePreview" class="rounded-xl border-2 border-black p-5 bg-gray-50 sticky bottom-0"></div>
+        <!-- LIVE PREVIEW (redesigned) -->
+        <div id="budgetLivePreview" class="sticky bottom-0"></div>
 
         <div class="flex justify-between items-center pt-3 border-t border-gray-100">
           <div>${id ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteBudget('${id}')">Eliminar</button>` : ''}</div>
@@ -2145,7 +2268,59 @@ function openBudgetModal(id) {
     </div>
   `);
 
-  setTimeout(() => updateBudgetLivePreview(), 30);
+  setTimeout(() => { updateBudgetSuggestions(); updateBudgetLivePreview(); }, 30);
+}
+
+function updatePricingDescription() {
+  const sel = document.querySelector('select[name="pricingModel"]');
+  const desc = document.getElementById('pricingDesc');
+  if (!sel || !desc) return;
+  const model = PRICING_MODELS.find(p => p.key === sel.value);
+  if (model) desc.textContent = model.description;
+}
+
+function updateBudgetSuggestions() {
+  const container = document.getElementById('budgetSuggestions');
+  if (!container) return;
+  const fd = new FormData(document.getElementById('budgetForm'));
+  const activeCats = BUDGET_CATEGORIES.filter(c => fd.get(`cat_${c.key}`) === 'on').map(c => c.key);
+
+  // Junta sugerencias únicas de todas las categorías tildadas
+  const seenTitles = new Set();
+  const suggestions = [];
+  activeCats.forEach(catKey => {
+    (COMMON_MODULES_BY_CATEGORY[catKey] || []).forEach(m => {
+      if (seenTitles.has(m.title)) return;
+      seenTitles.add(m.title);
+      suggestions.push(m);
+    });
+  });
+
+  if (suggestions.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  container.innerHTML = `
+    <div class="bg-blue-50 border border-blue-100 rounded-lg p-2.5">
+      <div class="text-[10px] uppercase tracking-wider text-blue-700 font-semibold mb-1.5">Sugerencias rápidas (click para agregar)</div>
+      <div class="flex flex-wrap gap-1.5">
+        ${suggestions.map((m, i) => `
+          <button type="button" onclick='addSuggestedModule(${JSON.stringify(m).replace(/"/g, "&quot;")})' class="text-[11px] px-2.5 py-1 rounded-md bg-white border border-blue-200 hover:bg-blue-100 transition">
+            + ${escapeHtml(m.title)}
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function addSuggestedModule(suggestion) {
+  const list = document.getElementById('budgetItemsList');
+  if (!list) return;
+  const empty = document.getElementById('budgetItemsEmpty');
+  if (empty) empty.remove();
+  list.insertAdjacentHTML('beforeend', budgetItemHTML(suggestion));
+  updateBudgetLivePreview();
 }
 
 function budgetItemHTML(it) {
@@ -2216,17 +2391,23 @@ function collectBudgetFromForm() {
     .filter(r => fd.get(`risk_${r.id}`) === 'on')
     .map(r => ({ id: r.id, value: Number(fd.get(`riskval_${r.id}`)) || r.def }));
 
+  // Multi-categoría desde los checkboxes
+  const categories = BUDGET_CATEGORIES
+    .filter(c => fd.get(`cat_${c.key}`) === 'on')
+    .map(c => c.key);
+
   return {
     id: fd.get('id') || null,
     code: fd.get('code') || '',
     clientName: fd.get('clientName') || '',
-    category: fd.get('category') || 'WEB',
+    categories: categories.length > 0 ? categories : ['WEB'],
     pricingModel: fd.get('pricingModel') || 'FIXED',
     currency: fd.get('currency') || 'USD',
     status: fd.get('status') || 'DRAFT',
     items,
     riskFactors,
     contingencyPct: Number(fd.get('contingencyPct')) || 12,
+    monthlyFee: Number(fd.get('monthlyFee')) || 0,
     notes: fd.get('notes') || '',
   };
 }
@@ -2238,66 +2419,107 @@ function updateBudgetLivePreview() {
   const preview = document.getElementById('budgetLivePreview');
   if (!preview) return;
 
-  const marginColors = { green: 'text-green-700', yellow: 'text-amber-700', red: 'text-red-600' };
-  const marginBg     = { green: 'bg-green-50 border-green-300', yellow: 'bg-amber-50 border-amber-300', red: 'bg-red-50 border-red-300' };
-  const statusIcons = {
-    green:  '✓ Margen objetivo alcanzado',
-    yellow: '⚠ Margen mínimo cumplido, sin colchón',
-    red:    '✕ Margen bajo el mínimo — requiere override de Dirección',
+  const marginConfig = {
+    green:  { textColor: 'text-green-700',  bgColor: 'bg-green-50',  borderColor: 'border-green-200',  icon: '✓', label: 'Margen objetivo alcanzado' },
+    yellow: { textColor: 'text-amber-700',  bgColor: 'bg-amber-50',  borderColor: 'border-amber-200',  icon: '⚠', label: 'Mínimo cumplido, sin colchón' },
+    red:    { textColor: 'text-red-700',    bgColor: 'bg-red-50',    borderColor: 'border-red-200',    icon: '✕', label: 'Bajo el mínimo: requiere override de Dirección' },
   };
+  const mc = marginConfig[est.marginStatus];
+  const profit = est.finalRevenue - est.finalCost;
+  const monthlyFee = Number(b.monthlyFee) || 0;
+  const hasMonthlyFee = monthlyFee > 0;
+
+  if (b.items.length === 0) {
+    preview.innerHTML = `
+      <div class="rounded-2xl bg-white shadow-lg border border-gray-200 p-6 text-center">
+        <div class="text-4xl mb-2 opacity-30">$</div>
+        <div class="text-gray-500 text-sm">Agregá al menos un módulo para ver el cálculo en vivo</div>
+      </div>
+    `;
+    return;
+  }
 
   preview.innerHTML = `
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="font-semibold flex items-center gap-2">📊 Resumen en vivo</h3>
-      <span class="text-xs text-gray-500">${est.pricingModel.label}</span>
-    </div>
+    <div class="rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden">
 
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-      <div>
-        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Horas totales</div>
-        <div class="text-xl font-bold">${est.finalHours.toFixed(0)}h</div>
-        <div class="text-[10px] text-gray-500">base ${est.baseHours.toFixed(0)}h</div>
-      </div>
-      <div>
-        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Costo interno</div>
-        <div class="text-xl font-bold text-red-600">${fmtAmount(est.finalCost, b.currency)}</div>
-      </div>
-      <div>
-        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Precio de venta</div>
-        <div class="text-xl font-bold text-green-700">${fmtAmount(est.finalRevenue, b.currency)}</div>
-      </div>
-      <div>
-        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Margen</div>
-        <div class="text-xl font-bold ${marginColors[est.marginStatus]}">${est.margin.toFixed(1)}%</div>
-        <div class="text-[10px] text-gray-500">mín ${est.minMargin}% / obj ${est.targetMargin}%</div>
-      </div>
-    </div>
+      <!-- HEADER: precio total + badge margen -->
+      <div class="p-5 pb-4">
+        <div class="flex items-start justify-between gap-3 mb-3">
+          <div class="min-w-0">
+            <div class="text-[11px] text-gray-500 uppercase tracking-wider font-semibold">Precio total</div>
+            <div class="text-3xl md:text-4xl font-bold tracking-tight mt-0.5">${fmtAmount(est.finalRevenue, b.currency)}</div>
+            <div class="text-xs text-gray-500 mt-1">${est.pricingModel.label}</div>
+          </div>
+          <div class="flex-shrink-0">
+            <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full ${mc.bgColor} ${mc.textColor} border ${mc.borderColor}">
+              <span class="text-base">${mc.icon}</span>
+              <span class="text-sm font-bold">${est.margin.toFixed(0)}% margen</span>
+            </div>
+          </div>
+        </div>
 
-    ${b.items.length > 0 ? `
-      <div class="border ${marginBg[est.marginStatus]} ${marginColors[est.marginStatus]} text-xs font-medium px-3 py-2 rounded-lg mb-3">
-        ${statusIcons[est.marginStatus]}
+        ${hasMonthlyFee ? `
+          <div class="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-3 mt-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-[10px] text-blue-600 uppercase tracking-wider font-semibold">+ Suscripción mensual</div>
+                <div class="text-lg font-bold text-blue-700">${fmtAmount(monthlyFee, b.currency)} <span class="text-xs font-normal text-blue-600">/ mes</span></div>
+              </div>
+              <div class="text-right text-[11px] text-blue-600">
+                ${fmtAmount(monthlyFee * 12, b.currency)}<br/>al año
+              </div>
+            </div>
+          </div>
+        ` : ''}
       </div>
-    ` : ''}
 
-    ${(est.riskSum > 0 || est.contingencyPct > 0) && b.items.length > 0 ? `
-      <div class="text-xs text-gray-600 mb-2">
-        Multiplicadores:
-        ${est.riskSum > 0 ? `<span class="font-medium">+${(est.riskSum*100).toFixed(0)}% riesgo</span>` : ''}
-        ${est.riskSum > 0 && est.contingencyPct > 0 ? ' · ' : ''}
-        ${est.contingencyPct > 0 ? `<span class="font-medium">+${est.contingencyPct.toFixed(0)}% contingencia</span>` : ''}
+      <!-- STATS GRID -->
+      <div class="grid grid-cols-3 border-t border-gray-100">
+        <div class="p-4 text-center border-r border-gray-100">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-0.5">Horas totales</div>
+          <div class="text-xl font-bold">${est.finalHours.toFixed(0)}h</div>
+          <div class="text-[10px] text-gray-400">base ${est.baseHours.toFixed(0)}h</div>
+        </div>
+        <div class="p-4 text-center border-r border-gray-100">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-0.5">Costo interno</div>
+          <div class="text-xl font-bold text-gray-700">${fmtAmount(est.finalCost, b.currency)}</div>
+          <div class="text-[10px] text-gray-400">${b.items.length} módulo${b.items.length!==1?'s':''}</div>
+        </div>
+        <div class="p-4 text-center">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-0.5">Ganancia</div>
+          <div class="text-xl font-bold text-green-700">${fmtAmount(profit, b.currency)}</div>
+          <div class="text-[10px] text-gray-400">objetivo ${est.targetMargin}%</div>
+        </div>
       </div>
-    ` : ''}
 
-    ${est.riskSum >= 1.0 ? `
-      <div class="bg-red-50 border border-red-200 rounded-lg p-2 text-xs text-red-800 mb-3">
-        ⚠ Riesgo total = 100%. La política dice que con este nivel no debería ser precio fijo. Considerá Discovery/PoC o T&M con tope.
+      <!-- STATUS BANNER -->
+      <div class="${mc.bgColor} ${mc.textColor} px-5 py-2.5 flex items-center gap-2 text-xs font-medium border-t ${mc.borderColor}">
+        <span class="text-sm">${mc.icon}</span>
+        <span>${mc.label}</span>
       </div>
-    ` : ''}
 
-    ${b.items.length === 0 ? '<div class="text-sm text-gray-400 italic">Agregá al menos un módulo para ver el cálculo</div>' : `
-      <details class="text-xs mt-2">
-        <summary class="cursor-pointer text-gray-600 hover:text-gray-900 select-none">Ver desglose por disciplina</summary>
-        <div class="mt-2 grid grid-cols-2 gap-x-4">
+      ${(est.riskSum > 0 || est.contingencyPct > 0) ? `
+        <div class="px-5 py-2 text-[11px] text-gray-600 bg-gray-50 border-t border-gray-100 flex flex-wrap items-center gap-3">
+          ${est.riskSum > 0 ? `<span><span class="text-gray-400">Riesgo:</span> <b>+${(est.riskSum*100).toFixed(0)}%</b></span>` : ''}
+          ${est.contingencyPct > 0 ? `<span><span class="text-gray-400">Contingencia:</span> <b>+${est.contingencyPct.toFixed(0)}%</b></span>` : ''}
+          <span class="text-gray-400">·</span>
+          <span><span class="text-gray-400">Mín. modalidad:</span> ${est.minMargin}%</span>
+        </div>
+      ` : ''}
+
+      ${est.riskSum >= 1.0 ? `
+        <div class="bg-red-50 border-t border-red-200 px-5 py-2.5 text-[11px] text-red-800">
+          ⚠ <b>Riesgo total = 100%.</b> La política sugiere NO usar precio fijo. Considerá Discovery/PoC o T&M con tope.
+        </div>
+      ` : ''}
+
+      <!-- DESGLOSE EXPANDIBLE -->
+      <details class="border-t border-gray-100 text-xs">
+        <summary class="px-5 py-2.5 cursor-pointer text-gray-600 hover:bg-gray-50 select-none flex items-center justify-between">
+          <span>Ver desglose por disciplina</span>
+          <span class="text-gray-400">▾</span>
+        </summary>
+        <div class="px-5 py-3 grid grid-cols-2 gap-x-6 gap-y-1 bg-gray-50/50">
           ${[
             ['Funcional', est.totalByDiscipline.functional],
             ['UX/UI', est.totalByDiscipline.ux],
@@ -2307,14 +2529,14 @@ function updateBudgetLivePreview() {
             ['Documentación', est.totalByDiscipline.docs],
             ['Project Mgmt', est.totalByDiscipline.pm],
           ].map(([label, h]) => `
-            <div class="flex justify-between border-b border-gray-200 py-1">
-              <span>${label}</span>
+            <div class="flex justify-between py-1 border-b border-gray-200/60">
+              <span class="text-gray-600">${label}</span>
               <span class="font-medium">${h.toFixed(1)}h</span>
             </div>
           `).join('')}
         </div>
       </details>
-    `}
+    </div>
   `;
 }
 
