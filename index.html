@@ -3901,21 +3901,37 @@ function renderFinance() {
   const allIncomeCashFlow = getAllCashFlowPayments('income');
   const allExpenseCashFlow = getAllCashFlowPayments('expense');
 
-  const sumCashIn = (payments) => payments.reduce((sum, p) =>
-    sum + convertAt(p.amount, p.currency, baseCur, p.exchangeRate), 0
+  // Helpers que devuelven el total en CUALQUIER moneda (ARS o USD) preservando
+  // la cotización CONGELADA de cada pago. Así nunca se mezclan denominaciones.
+  const sumInCurrency = (payments, targetCur) => payments.reduce((sum, p) =>
+    sum + convertAt(p.amount, p.currency, targetCur, p.exchangeRate), 0
   );
 
-  // Total cobrado/pagado = suma de pagos cuya FECHA cae en el rango visto
-  const incTotalConfirmed = sumCashIn(allIncomeCashFlow.filter(p => p.date && inRange(p.date, from, to)));
-  const expTotalPaid      = sumCashIn(allExpenseCashFlow.filter(p => p.date && inRange(p.date, from, to)));
+  const incomeInRange  = allIncomeCashFlow.filter(p => p.date && inRange(p.date, from, to));
+  const expenseInRange = allExpenseCashFlow.filter(p => p.date && inRange(p.date, from, to));
+
+  // Totales en AMBAS monedas (cada uno usa la cotización congelada de cada pago)
+  const incTotalConfirmedARS = sumInCurrency(incomeInRange,  'ARS');
+  const incTotalConfirmedUSD = sumInCurrency(incomeInRange,  'USD');
+  const expTotalPaidARS      = sumInCurrency(expenseInRange, 'ARS');
+  const expTotalPaidUSD      = sumInCurrency(expenseInRange, 'USD');
+
+  // Para retrocompatibilidad con el resto del código que usa baseCur:
+  const incTotalConfirmed = baseCur === 'USD' ? incTotalConfirmedUSD : incTotalConfirmedARS;
+  const expTotalPaid      = baseCur === 'USD' ? expTotalPaidUSD      : expTotalPaidARS;
 
   // Pendiente: lo que falta cobrar/pagar (solo se muestra en vista Mes)
   const incTotalPending = incWithKind.reduce((a, b) => a + pendingPart(b), 0);
   const expTotalPending = expWithKind.reduce((a, b) => a + pendingPart(b), 0);
   const incTotal = incTotalConfirmed + incTotalPending;
   const expTotal = expTotalPaid + expTotalPending;
-  const balance = incTotalConfirmed - expTotalPaid;
+  const balanceARS = incTotalConfirmedARS - expTotalPaidARS;
+  const balanceUSD = incTotalConfirmedUSD - expTotalPaidUSD;
+  const balance = baseCur === 'USD' ? balanceUSD : balanceARS;
   const margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
+
+  // sumCashIn legacy para el resto del código (bar chart)
+  const sumCashIn = (payments) => sumInCurrency(payments, baseCur);
 
   // Breakdown per month if range covers more than one month
   const monthsInRange = monthsBetween(from, to);
@@ -4019,21 +4035,25 @@ function renderFinance() {
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         <div class="card p-4 md:p-5">
           <div class="text-xs text-gray-500">${showPending ? 'Cobrado' : 'Ingresos'}</div>
-          <div class="text-xl md:text-2xl font-semibold text-green-700">${fmtAmount(incTotalConfirmed, baseCur)}</div>
+          <div class="text-xl md:text-2xl font-semibold text-green-700">${fmtAmount(incTotalConfirmedARS, 'ARS')}</div>
+          <div class="text-xs text-gray-500 font-medium">${fmtAmount(incTotalConfirmedUSD, 'USD')}</div>
           ${showPending && incTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(incTotalPending, baseCur)} esperado este mes</div>` : ''}
         </div>
         <div class="card p-4 md:p-5">
           <div class="text-xs text-gray-500">${showPending ? 'Pagado' : 'Gastos'}</div>
-          <div class="text-xl md:text-2xl font-semibold text-red-600">${fmtAmount(expTotalPaid, baseCur)}</div>
+          <div class="text-xl md:text-2xl font-semibold text-red-600">${fmtAmount(expTotalPaidARS, 'ARS')}</div>
+          <div class="text-xs text-gray-500 font-medium">${fmtAmount(expTotalPaidUSD, 'USD')}</div>
           ${showPending && expTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(expTotalPending, baseCur)} esperado este mes</div>` : ''}
         </div>
         <div class="card p-4 md:p-5">
           <div class="text-xs text-gray-500">Balance</div>
-          <div class="text-xl md:text-2xl font-semibold ${balance>=0?'text-green-700':'text-red-600'}">${fmtAmount(balance, baseCur)}</div>
+          <div class="text-xl md:text-2xl font-semibold ${balanceARS>=0?'text-green-700':'text-red-600'}">${fmtAmount(balanceARS, 'ARS')}</div>
+          <div class="text-xs ${balanceUSD>=0?'text-gray-500':'text-red-400'} font-medium">${fmtAmount(balanceUSD, 'USD')}</div>
         </div>
         <div class="card p-4 md:p-5">
           <div class="text-xs text-gray-500">Margen</div>
           <div class="text-xl md:text-2xl font-semibold">${margin}%</div>
+          <div class="text-[11px] text-gray-400 mt-0.5">sobre cobrado</div>
         </div>
       </div>
 
@@ -4168,10 +4188,16 @@ function renderFinance() {
               </tbody>
               <tfoot class="bg-gray-50 font-semibold border-t-2 border-gray-200">
                 <tr>
-                  <td colspan="2" class="px-3 md:px-5 py-3 text-right text-xs uppercase tracking-wider text-gray-500">Total confirmado</td>
-                  <td class="px-3 py-3 text-right text-green-700">${fmtAmount(incTotalConfirmed, baseCur)}</td>
-                  <td class="px-3 py-3 text-right text-red-600">${fmtAmount(expTotalPaid, baseCur)}</td>
-                  <td colspan="2" class="px-3 md:px-5 py-3 text-right ${balance>=0?'text-green-700':'text-red-600'}">${fmtAmount(balance, baseCur)}</td>
+                  <td colspan="2" class="px-3 md:px-5 py-3 text-right text-xs uppercase tracking-wider text-gray-500">Total confirmado (ARS)</td>
+                  <td class="px-3 py-3 text-right text-green-700">${fmtAmount(incTotalConfirmedARS, 'ARS')}</td>
+                  <td class="px-3 py-3 text-right text-red-600">${fmtAmount(expTotalPaidARS, 'ARS')}</td>
+                  <td colspan="2" class="px-3 md:px-5 py-3 text-right ${balanceARS>=0?'text-green-700':'text-red-600'}">${fmtAmount(balanceARS, 'ARS')}</td>
+                </tr>
+                <tr>
+                  <td colspan="2" class="px-3 md:px-5 py-2 text-right text-[10px] uppercase tracking-wider text-gray-400">Equivalente en USD</td>
+                  <td class="px-3 py-2 text-right text-green-700/70 text-sm">${fmtAmount(incTotalConfirmedUSD, 'USD')}</td>
+                  <td class="px-3 py-2 text-right text-red-600/70 text-sm">${fmtAmount(expTotalPaidUSD, 'USD')}</td>
+                  <td colspan="2" class="px-3 md:px-5 py-2 text-right text-sm ${balanceUSD>=0?'text-green-700/70':'text-red-600/70'}">${fmtAmount(balanceUSD, 'USD')}</td>
                 </tr>
                 ${showPending && (incTotalPending > 0 || expTotalPending > 0) ? `
                   <tr class="text-amber-700">
@@ -4184,6 +4210,45 @@ function renderFinance() {
               </tfoot>
             </table>
           </div>
+
+          <details class="border-t border-gray-100 px-4 md:px-5 py-3 text-xs">
+            <summary class="cursor-pointer text-gray-600 hover:text-gray-900 select-none">
+              Ver detalle de cada pago del período (${incomeInRange.length + expenseInRange.length} pagos)
+            </summary>
+            <div class="mt-3 space-y-3">
+              ${incomeInRange.length > 0 ? `
+                <div>
+                  <div class="text-[10px] uppercase tracking-wider text-green-700 font-semibold mb-1">Cobros (${incomeInRange.length})</div>
+                  <div class="space-y-0.5 max-h-60 overflow-y-auto pr-2">
+                    ${incomeInRange.sort((a,b) => (b.date||'').localeCompare(a.date||'')).map(p => `
+                      <div class="flex items-center justify-between gap-3 py-1 border-b border-gray-100">
+                        <span class="text-gray-500 w-20 text-[10px]">${p.date || '—'}</span>
+                        <span class="flex-1 truncate font-medium">${fmtAmount(p.amount, p.currency)}</span>
+                        <span class="text-gray-500">→ ${fmtAmount(convertAt(p.amount, p.currency, 'ARS', p.exchangeRate), 'ARS')}</span>
+                        <span class="text-gray-400 text-[10px]">@${(Number(p.exchangeRate)||1200).toLocaleString('es-AR')}</span>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+              ${expenseInRange.length > 0 ? `
+                <div>
+                  <div class="text-[10px] uppercase tracking-wider text-red-700 font-semibold mb-1">Pagos (${expenseInRange.length})</div>
+                  <div class="space-y-0.5 max-h-60 overflow-y-auto pr-2">
+                    ${expenseInRange.sort((a,b) => (b.date||'').localeCompare(a.date||'')).map(p => `
+                      <div class="flex items-center justify-between gap-3 py-1 border-b border-gray-100">
+                        <span class="text-gray-500 w-20 text-[10px]">${p.date || '—'}</span>
+                        <span class="flex-1 truncate font-medium">${fmtAmount(p.amount, p.currency)}</span>
+                        <span class="text-gray-500">→ ${fmtAmount(convertAt(p.amount, p.currency, 'ARS', p.exchangeRate), 'ARS')}</span>
+                        <span class="text-gray-400 text-[10px]">@${(Number(p.exchangeRate)||1200).toLocaleString('es-AR')}</span>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+              <p class="text-[10px] text-gray-400 mt-2">Cada pago usa su cotización congelada al momento del cobro/pago. Los totales suman cada uno convertido a la moneda objetivo.</p>
+            </div>
+          </details>
         `}
       </div>
 
