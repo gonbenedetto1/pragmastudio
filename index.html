@@ -3767,10 +3767,12 @@ function openInvoiceModal(item) {
   const defaultDocNumber = projTaxId.length === 11 ? projTaxId : '';
   const defaultName = p?.contactName || p?.name || '';
 
-  // Fechas servicio: por defecto el mes del ingreso
+  // Fechas servicio: por defecto el mes del ingreso (timezone-safe)
   const monthStr = item.month || todayISO().slice(0, 7);
+  const [_y, _m] = monthStr.split('-').map(Number);
   const firstDay = `${monthStr}-01`;
-  const lastDay = new Date(new Date(firstDay).getFullYear(), new Date(firstDay).getMonth() + 1, 0).toISOString().slice(0, 10);
+  const lastDayNum = new Date(_y, _m, 0).getDate(); // día 0 del mes siguiente = último del mes actual
+  const lastDay = `${monthStr}-${String(lastDayNum).padStart(2, '0')}`;
 
   // Monto a facturar: por defecto el total esperado, en ARS (AFIP factura en pesos)
   let defaultAmount = s.expected;
@@ -3780,13 +3782,13 @@ function openInvoiceModal(item) {
   }
 
   openModal(`
-    <div class="p-6 max-w-xl">
+    <div class="p-4 sm:p-6">
       <div class="flex items-start justify-between gap-3 mb-4">
         <div class="flex-1 min-w-0">
-          <h2 class="text-xl font-semibold">Emitir Factura C</h2>
-          <p class="text-sm text-gray-500 mt-0.5">${escapeHtml(item.concept)}${p ? ` · ${escapeHtml(p.name)}` : ''}</p>
+          <h2 class="text-lg sm:text-xl font-semibold">Emitir Factura C</h2>
+          <p class="text-xs sm:text-sm text-gray-500 mt-0.5 truncate">${escapeHtml(item.concept)}${p ? ` · ${escapeHtml(p.name)}` : ''}</p>
         </div>
-        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-xl leading-none shrink-0">✕</button>
       </div>
 
       <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-900">
@@ -3800,7 +3802,7 @@ function openInvoiceModal(item) {
           <input name="clientName" class="input" value="${escapeAttr(defaultName)}" placeholder="Opcional, para tu registro" />
         </div>
 
-        <div class="grid grid-cols-2 gap-2">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <div>
             <label class="text-xs text-gray-500">Tipo de documento</label>
             <select name="clientDocType" class="input" onchange="updateInvoiceDocPlaceholder(this.value)">
@@ -3825,7 +3827,7 @@ function openInvoiceModal(item) {
           </select>
         </div>
 
-        <div class="grid grid-cols-3 gap-2" id="invoiceServiceDates">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2" id="invoiceServiceDates">
           <div>
             <label class="text-xs text-gray-500">Servicio desde</label>
             <input type="date" name="serviceFromDate" class="input" value="${firstDay}" />
