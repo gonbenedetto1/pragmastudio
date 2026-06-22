@@ -2814,7 +2814,9 @@ function renderTeam() {
         ${state.members.map(m => {
           const tasks = state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length;
           const isMe = m.id === currentMemberId;
-          const hasLogin = !!m.email;  // Con Supabase Auth, todo el que tiene email puede tener login
+          const hasLogin = !!m.email;
+          const role = MEMBER_ROLES.find(r => r.key === m.role);
+          const cap = Number(m.weeklyCapacityHrs) || 30;
           return `
             <div class="p-4 flex items-center gap-3 hover:bg-gray-50 flex-wrap">
               <span class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0" style="background:${m.color}">${escapeHtml(m.name[0])}</span>
@@ -2822,9 +2824,10 @@ function renderTeam() {
                 <div class="flex items-center gap-2 flex-wrap">
                   <span class="font-medium">${escapeHtml(m.name)}</span>
                   ${isMe ? '<span class="chip bg-blue-100 text-blue-700">Vos</span>' : ''}
+                  ${role ? `<span class="chip bg-gray-100 text-gray-700">${escapeHtml(role.label)}</span>` : ''}
                   ${hasLogin ? `<span class="chip bg-purple-100 text-purple-700" title="Email: ${escapeAttr(m.email)}">🔑 ${escapeHtml(m.email)}</span>` : ''}
                 </div>
-                <div class="text-xs text-gray-500">${m.email ? escapeHtml(m.email) + ' · ' : ''}${tasks} tarea${tasks!==1?'s':''} activa${tasks!==1?'s':''}</div>
+                <div class="text-xs text-gray-500">${tasks} tarea${tasks!==1?'s':''} activa${tasks!==1?'s':''} · ${cap}h/sem disponibles</div>
               </div>
               <div class="flex gap-1 flex-wrap items-center">
                 <button class="btn-ghost text-sm" onclick="openMemberModal('${m.id}')" title="Editar nombre, email y color">✎ Editar</button>
@@ -3059,15 +3062,43 @@ function testEmail() {
     });
 }
 
+const MEMBER_ROLES = [
+  { key: 'FOUNDER',     label: 'Owner / Fundador' },
+  { key: 'TECH_LEAD',   label: 'Lead técnico' },
+  { key: 'BACKEND',     label: 'Dev Backend' },
+  { key: 'FRONTEND',    label: 'Dev Frontend' },
+  { key: 'FULLSTACK',   label: 'Dev Full-stack' },
+  { key: 'AI',          label: 'Especialista IA' },
+  { key: 'DESIGN',      label: 'Diseño UX/UI' },
+  { key: 'PM',          label: 'Project Manager' },
+  { key: 'SALES',       label: 'Marketing & Ventas' },
+  { key: 'CS',          label: 'Customer Success' },
+  { key: 'OTHER',       label: 'Otro' },
+];
+
 function openMemberModal(id) {
-  const m = id ? getMember(id) : { id: null, name: '', email: '', color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6,'0') };
+  const m = id ? getMember(id) : { id: null, name: '', email: '', role: '', weeklyCapacityHrs: 30, color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6,'0') };
   openModal(`
     <div class="p-6">
       <h2 class="text-xl font-semibold mb-4">${id ? 'Editar miembro' : 'Nuevo miembro'}</h2>
       <form onsubmit="saveMember(event)" class="space-y-3">
         <input type="hidden" name="id" value="${m.id || ''}" />
         <div><label class="text-xs text-gray-500">Nombre</label><input name="name" class="input" required autofocus value="${escapeAttr(m.name)}" /></div>
-        <div><label class="text-xs text-gray-500">Email <span class="text-gray-400">(para recibir notificaciones)</span></label><input type="email" name="email" class="input" value="${escapeAttr(m.email || '')}" placeholder="tu@email.com" /></div>
+        <div><label class="text-xs text-gray-500">Email <span class="text-gray-400">(para login y notificaciones)</span></label><input type="email" name="email" class="input" value="${escapeAttr(m.email || '')}" placeholder="tu@email.com" /></div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-500">Rol</label>
+            <select name="role" class="input">
+              <option value="">Sin definir</option>
+              ${MEMBER_ROLES.map(r => `<option value="${r.key}" ${m.role===r.key?'selected':''}>${r.label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Capacidad semanal (hs)</label>
+            <input type="number" name="weeklyCapacityHrs" class="input" min="0" max="60" value="${m.weeklyCapacityHrs || 30}" />
+            <p class="text-[10px] text-gray-400 mt-0.5">Horas productivas reales por semana (no las del horario)</p>
+          </div>
+        </div>
         <div><label class="text-xs text-gray-500">Color</label><input type="color" name="color" class="input h-10" value="${m.color}" /></div>
         <div class="flex justify-between pt-3">
           <div>${id && id !== currentMemberId && state.members.length > 1 ? `<button type="button" class="btn-ghost text-red-600 text-sm" onclick="deleteMember('${id}')">Eliminar</button>` : ''}</div>
@@ -4526,12 +4557,29 @@ function renderReports() {
   const since = new Date(); since.setDate(since.getDate() - 30);
   const recentlyDone = state.tasks.filter(t => t.completedAt && new Date(t.completedAt) >= since).length;
 
-  // Workload per member
-  const workload = state.members.map(m => ({
-    member: m,
-    active: state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED').length,
-    done30d: state.tasks.filter(t => t.assigneeId === m.id && t.completedAt && new Date(t.completedAt) >= since).length,
-  }));
+  // Workload per member: horas estimadas pendientes vs capacidad semanal
+  const workload = state.members.map(m => {
+    const activeTasks = state.tasks.filter(t => t.assigneeId === m.id && t.status !== 'COMPLETED');
+    const blockedTasks = activeTasks.filter(t => t.status === 'BLOCKED');
+    const estimatedHrsPending = activeTasks.reduce((sum, t) => sum + (Number(t.estimatedHrs) || 0), 0);
+    const capacity = Number(m.weeklyCapacityHrs) || 30;
+    const weeksOfLoad = capacity > 0 ? estimatedHrsPending / capacity : 0;
+    let loadStatus = 'green';                   // < 1 semana
+    if (weeksOfLoad > 4)      loadStatus = 'red';      // > 4 semanas: saturado
+    else if (weeksOfLoad > 2) loadStatus = 'amber';    // 2-4 semanas: alto
+    else if (weeksOfLoad > 1) loadStatus = 'yellow';   // 1-2 semanas: ok pero ya cargado
+    return {
+      member: m,
+      role: MEMBER_ROLES.find(r => r.key === m.role),
+      active: activeTasks.length,
+      blocked: blockedTasks.length,
+      done30d: state.tasks.filter(t => t.assigneeId === m.id && t.completedAt && new Date(t.completedAt) >= since).length,
+      estimatedHrsPending,
+      capacity,
+      weeksOfLoad,
+      loadStatus,
+    };
+  }).sort((a, b) => b.weeksOfLoad - a.weeksOfLoad);
 
   return `
     ${viewHeader('Reportes', 'Tu radar del trabajo')}
@@ -4560,17 +4608,55 @@ function renderReports() {
       </div>
 
       <div class="card p-5">
-        <h3 class="font-semibold mb-3">Carga por miembro</h3>
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-semibold">Carga del equipo</h3>
+          <span class="text-[11px] text-gray-500">Horas estimadas pendientes / capacidad semanal</span>
+        </div>
         ${workload.length === 0 ? '<div class="text-sm text-gray-400">Sin miembros.</div>' : `
-        <div class="space-y-3">
-          ${workload.map(w => `
-            <div class="flex items-center gap-3">
-              <span class="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold" style="background:${w.member.color}">${escapeHtml(w.member.name[0])}</span>
-              <span class="text-sm font-medium w-32 truncate">${escapeHtml(w.member.name)}</span>
-              <span class="chip bg-blue-100 text-blue-700">${w.active} activas</span>
-              <span class="chip bg-green-100 text-green-700">${w.done30d} completadas (30d)</span>
-            </div>
-          `).join('')}
+        <div class="space-y-4">
+          ${workload.map(w => {
+            const colors = {
+              green: { bg: 'bg-green-500', text: 'text-green-700', label: 'OK' },
+              yellow:{ bg: 'bg-blue-500',  text: 'text-blue-700',  label: 'Cargado' },
+              amber: { bg: 'bg-amber-500', text: 'text-amber-700', label: 'Alto' },
+              red:   { bg: 'bg-red-500',   text: 'text-red-700',   label: 'Saturado' },
+            };
+            const c = colors[w.loadStatus];
+            const pct = Math.min(100, w.capacity > 0 ? (w.estimatedHrsPending / (w.capacity * 4)) * 100 : 0);
+            return `
+              <div>
+                <div class="flex items-center gap-3 mb-1">
+                  <span class="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0" style="background:${w.member.color}">${escapeHtml(w.member.name[0])}</span>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-sm font-medium">${escapeHtml(w.member.name)}</span>
+                      ${w.role ? `<span class="text-[10px] text-gray-500 uppercase tracking-wider">${escapeHtml(w.role.label)}</span>` : ''}
+                      ${w.blocked > 0 ? `<span class="chip bg-red-100 text-red-700">⚠ ${w.blocked} bloqueada${w.blocked>1?'s':''}</span>` : ''}
+                    </div>
+                  </div>
+                  <span class="chip ${w.loadStatus==='red'?'bg-red-100 text-red-700':w.loadStatus==='amber'?'bg-amber-100 text-amber-700':w.loadStatus==='yellow'?'bg-blue-100 text-blue-700':'bg-green-100 text-green-700'} text-[10px]">${c.label}</span>
+                </div>
+                <div class="ml-10">
+                  <div class="flex justify-between text-[11px] text-gray-600 mb-1">
+                    <span><b>${w.estimatedHrsPending}h</b> estimadas pendientes · <b>${w.active}</b> tareas activas</span>
+                    <span class="${c.text} font-semibold">${w.weeksOfLoad.toFixed(1)} sem. de trabajo</span>
+                  </div>
+                  <div class="h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div class="h-full ${c.bg} transition-all" style="width:${pct}%"></div>
+                  </div>
+                  <div class="flex justify-between text-[10px] text-gray-400 mt-1">
+                    <span>capacidad ${w.capacity}h/sem</span>
+                    <span>${w.done30d} cerradas últ. 30d</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+
+        <div class="mt-5 pt-4 border-t border-gray-100 text-[11px] text-gray-500 leading-relaxed">
+          <b class="text-gray-700">Cómo leer este indicador:</b><br/>
+          Cada barra muestra cuántas <b>semanas de trabajo</b> tiene cada uno acumuladas (horas estimadas ÷ capacidad semanal). Verde = al día (&lt;1 sem) · Azul = cargado (1-2) · Ámbar = alto (2-4) · Rojo = saturado (&gt;4). Si alguien queda rojo y otro verde, conviene rebalancear tareas.
         </div>`}
       </div>
     </div>
