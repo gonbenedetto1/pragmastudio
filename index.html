@@ -211,6 +211,7 @@ const DEFAULT_STATE = {
   exchangeRateSource: 'manual',   // 'manual' | 'blue' | 'oficial' | 'mep' | 'cripto' | 'tarjeta'
   exchangeRateUpdatedAt: null,
   budgets: [],                    // Presupuestos: { id, code, clientName, category, pricingModel, currency, status, items, riskFactors, contingencyPct, ... }
+  invoices: [],                   // Facturas AFIP: { id, incomeId, projectId, cae, number, ptoVta, cbteTipo, typeName, date, amount, currency, clientName, clientDocType, clientDocNumber, issuedAt, issuedBy }
 };
 
 const INCOME_STATUS = {
@@ -3713,6 +3714,258 @@ function submitPayment(e) {
   render();
 }
 
+// ============================================================
+// AFIP — Facturación Electrónica (Factura C / Monotributo)
+// ============================================================
+
+function hasInvoiceFor(item) {
+  if (!item || !item.id) return false;
+  const incomeId = item.auto ? `auto:${item.projectId}:${item.month}` : item.id;
+  return (state.invoices || []).some(inv => inv.incomeId === incomeId && !inv.voided);
+}
+
+function getInvoiceFor(item) {
+  if (!item || !item.id) return null;
+  const incomeId = item.auto ? `auto:${item.projectId}:${item.month}` : item.id;
+  return (state.invoices || []).find(inv => inv.incomeId === incomeId && !inv.voided) || null;
+}
+
+async function getAuthToken() {
+  if (!sb) throw new Error('Supabase no disponible');
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session?.access_token) throw new Error('Sesión expirada — re-loguéate');
+  return session.access_token;
+}
+
+async function callApi(path, opts = {}) {
+  const token = await getAuthToken();
+  const res = await fetch(path, {
+    method: opts.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  let json;
+  try { json = await res.json(); } catch { json = { error: 'Respuesta inválida del servidor' }; }
+  if (!res.ok) throw new Error(json.error || `Error ${res.status}`);
+  return json;
+}
+
+let _currentInvoiceItem = null;
+
+function openInvoiceModal(item) {
+  _currentInvoiceItem = item;
+  const s = getPaymentSummary(item);
+  const p = item.projectId ? getProject(item.projectId) : null;
+  const cur = item.currency || 'ARS';
+
+  // Heurística doc: si project.taxId existe → CUIT (80), si no → Consumidor Final
+  const projTaxId = (p?.taxId || '').replace(/[^\d]/g, '');
+  const defaultDocType = projTaxId.length === 11 ? '80' : '99';
+  const defaultDocNumber = projTaxId.length === 11 ? projTaxId : '';
+  const defaultName = p?.contactName || p?.name || '';
+
+  // Fechas servicio: por defecto el mes del ingreso
+  const monthStr = item.month || todayISO().slice(0, 7);
+  const firstDay = `${monthStr}-01`;
+  const lastDay = new Date(new Date(firstDay).getFullYear(), new Date(firstDay).getMonth() + 1, 0).toISOString().slice(0, 10);
+
+  // Monto a facturar: por defecto el total esperado, en ARS (AFIP factura en pesos)
+  let defaultAmount = s.expected;
+  if (cur === 'USD') {
+    const rate = Number(state.exchangeRate) || 1200;
+    defaultAmount = Math.round(s.expected * rate);
+  }
+
+  openModal(`
+    <div class="p-6 max-w-xl">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div class="flex-1 min-w-0">
+          <h2 class="text-xl font-semibold">Emitir Factura C</h2>
+          <p class="text-sm text-gray-500 mt-0.5">${escapeHtml(item.concept)}${p ? ` · ${escapeHtml(p.name)}` : ''}</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-900">
+        <b>⚠ Producción AFIP.</b> Esta factura tiene validez fiscal real. Verificá los datos antes de emitir.
+        ${cur === 'USD' ? '<br><b>Atención:</b> la factura se emite en PESOS. Monto convertido al cambio actual.' : ''}
+      </div>
+
+      <form onsubmit="submitInvoice(event)" class="space-y-3">
+        <div>
+          <label class="text-xs text-gray-500">Cliente (nombre / razón social)</label>
+          <input name="clientName" class="input" value="${escapeAttr(defaultName)}" placeholder="Opcional, para tu registro" />
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Tipo de documento</label>
+            <select name="clientDocType" class="input" onchange="updateInvoiceDocPlaceholder(this.value)">
+              <option value="99" ${defaultDocType==='99'?'selected':''}>Consumidor Final</option>
+              <option value="80" ${defaultDocType==='80'?'selected':''}>CUIT</option>
+              <option value="86">CUIL</option>
+              <option value="96">DNI</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Número (sin guiones)</label>
+            <input id="invoiceDocNumber" name="clientDocNumber" class="input" value="${escapeAttr(defaultDocNumber)}" placeholder="${defaultDocType==='99'?'(no requerido)':'Ej: 20424402142'}" />
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Concepto</label>
+          <select name="concept" class="input">
+            <option value="2" selected>Servicios</option>
+            <option value="1">Productos</option>
+            <option value="3">Productos y Servicios</option>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-3 gap-2" id="invoiceServiceDates">
+          <div>
+            <label class="text-xs text-gray-500">Servicio desde</label>
+            <input type="date" name="serviceFromDate" class="input" value="${firstDay}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Servicio hasta</label>
+            <input type="date" name="serviceToDate" class="input" value="${lastDay}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Vto. de pago</label>
+            <input type="date" name="dueDate" class="input" value="${lastDay}" />
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Monto a facturar <b>(ARS)</b></label>
+          <div class="relative">
+            <input type="number" step="0.01" name="amount" class="input pr-12" required value="${Number(defaultAmount).toFixed(2)}" />
+            <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-semibold pointer-events-none">ARS</span>
+          </div>
+          ${cur === 'USD' ? `<p class="text-[11px] text-gray-500 mt-1">Original: US$${s.expected.toLocaleString('es-AR')} · cambio $${(Number(state.exchangeRate)||1200).toLocaleString('es-AR')}</p>` : ''}
+        </div>
+
+        <div id="invoiceErrorBox" class="hidden bg-red-50 border border-red-200 text-red-800 text-xs rounded-lg p-3"></div>
+
+        <div class="flex justify-end gap-2 pt-3 border-t border-gray-100">
+          <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" id="invoiceSubmitBtn" class="btn-primary">🧾 Emitir Factura C</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function updateInvoiceDocPlaceholder(docType) {
+  const inp = document.getElementById('invoiceDocNumber');
+  if (!inp) return;
+  if (docType === '99') {
+    inp.placeholder = '(no requerido)';
+    inp.value = '';
+  } else if (docType === '80') {
+    inp.placeholder = 'CUIT (11 dígitos)';
+  } else if (docType === '86') {
+    inp.placeholder = 'CUIL (11 dígitos)';
+  } else {
+    inp.placeholder = 'DNI (7-8 dígitos)';
+  }
+}
+
+async function submitInvoice(e) {
+  e.preventDefault();
+  if (!_currentInvoiceItem) return;
+  const item = _currentInvoiceItem;
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const errBox = document.getElementById('invoiceErrorBox');
+  const btn = document.getElementById('invoiceSubmitBtn');
+  if (errBox) errBox.classList.add('hidden');
+
+  const amount = Number(data.amount);
+  if (!amount || amount <= 0) {
+    if (errBox) { errBox.textContent = 'Monto inválido'; errBox.classList.remove('hidden'); }
+    return;
+  }
+  if (data.clientDocType !== '99' && !String(data.clientDocNumber || '').replace(/[^\d]/g, '')) {
+    if (errBox) { errBox.textContent = 'Falta el número de documento del cliente'; errBox.classList.remove('hidden'); }
+    return;
+  }
+
+  if (!confirm(`¿Confirmás emitir Factura C por $${amount.toLocaleString('es-AR')} ARS?\n\nEsta acción es REAL y queda registrada en AFIP.`)) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Emitiendo...';
+
+  try {
+    const payload = {
+      amount,
+      concept: Number(data.concept) || 2,
+      clientDocType: Number(data.clientDocType) || 99,
+      clientDocNumber: data.clientDocType === '99' ? 0 : Number(String(data.clientDocNumber).replace(/[^\d]/g, '')),
+      serviceFromDate: data.serviceFromDate,
+      serviceToDate: data.serviceToDate,
+      dueDate: data.dueDate,
+    };
+    const result = await callApi('/api/afip/emitir', { method: 'POST', body: payload });
+
+    // Guardar en state
+    const incomeId = item.auto ? `auto:${item.projectId}:${item.month}` : item.id;
+    const invoice = {
+      id: uid(),
+      incomeId,
+      projectId: item.projectId || null,
+      cae: result.cae,
+      caeExpiry: result.caeExpiry,
+      number: result.number,
+      ptoVta: result.ptoVta,
+      cbteTipo: result.cbteTipo,
+      typeName: result.typeName || 'Factura C',
+      code: `${String(result.ptoVta).padStart(5,'0')}-${String(result.number).padStart(8,'0')}`,
+      date: result.date,
+      amount: result.amount,
+      currency: result.currency || 'PES',
+      clientName: data.clientName || '',
+      clientDocType: payload.clientDocType,
+      clientDocNumber: payload.clientDocNumber,
+      issuedAt: result.issuedAt,
+      issuedBy: result.issuedBy,
+    };
+    state.invoices = state.invoices || [];
+    state.invoices.push(invoice);
+    save();
+
+    closeModal();
+    showToast(`Factura C ${invoice.code} emitida · CAE ${invoice.cae}`, 'success');
+    render();
+  } catch (err) {
+    if (errBox) {
+      errBox.innerHTML = `<b>Error de AFIP:</b> ${escapeHtml(err.message || String(err))}`;
+      errBox.classList.remove('hidden');
+    }
+    btn.disabled = false;
+    btn.textContent = '🧾 Emitir Factura C';
+  }
+}
+
+async function checkAfipStatus() {
+  try {
+    const status = await callApi('/api/afip/estado');
+    const lines = [
+      `CUIT: ${status.cuit || '—'}`,
+      `PV: ${status.ptoVta || '—'}`,
+      `Producción: ${status.production ? 'SÍ' : 'no (homologación)'}`,
+      `AFIP: ${status.afipConnection === 'ok' ? '✓ conectado' : '✗ ' + (status.afipError || 'error')}`,
+      `Último Factura C: ${status.lastFacturaC ?? '—'}`,
+    ];
+    alert('Estado AFIP\n\n' + lines.join('\n'));
+  } catch (err) {
+    alert('Error: ' + (err.message || String(err)));
+  }
+}
+
 function reactivateRecurringExpense(expenseId) {
   const e = state.expenses.find(x => x.id === expenseId);
   if (!e) return;
@@ -4419,6 +4672,14 @@ function renderFinance() {
                         </td>
                         <td class="px-3 md:px-5 py-2.5 text-right">
                           <div class="flex items-center justify-end gap-1">
+                            ${isInc && hasInvoiceFor(it) ? `
+                              <span class="text-[10px] chip bg-purple-100 text-purple-700" title="Ya facturada">🧾 ${escapeHtml(getInvoiceFor(it).code || '#' + getInvoiceFor(it).number)}</span>
+                            ` : ''}
+                            ${isInc && !hasInvoiceFor(it) && (sum.status === 'PAID' || sum.status === 'PARTIAL') ? `
+                              <button onclick='openInvoiceModal(${JSON.stringify(it).replace(/"/g, "&quot;")})' class="text-purple-700 hover:bg-purple-50 p-1.5 rounded-md transition" title="Emitir factura AFIP">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="14" x2="15" y2="14"/><line x1="9" y1="18" x2="15" y2="18"/></svg>
+                              </button>
+                            ` : ''}
                             ${isInc && it.auto && isPending && p && p.contactPhone ? `
                               <button onclick="sendPaymentReminder(${JSON.stringify(it).replace(/"/g, '&quot;')})" class="text-green-700 hover:bg-green-50 p-1.5 rounded-md transition" title="Enviar recordatorio por WhatsApp">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
