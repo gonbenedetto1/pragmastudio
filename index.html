@@ -3796,7 +3796,7 @@ function openInvoiceModal(item) {
         ${cur === 'USD' ? '<br><b>Atención:</b> la factura se emite en PESOS. Monto convertido al cambio actual.' : ''}
       </div>
 
-      <form onsubmit="submitInvoice(event)" class="space-y-3">
+      <form id="invoiceForm" onsubmit="previewInvoice(event)" class="space-y-3">
         <div>
           <label class="text-xs text-gray-500">Cliente (nombre / razón social)</label>
           <input name="clientName" class="input" value="${escapeAttr(defaultName)}" placeholder="Opcional, para tu registro" />
@@ -3855,35 +3855,21 @@ function openInvoiceModal(item) {
 
         <div class="flex justify-end gap-2 pt-3 border-t border-gray-100">
           <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
-          <button type="submit" id="invoiceSubmitBtn" class="btn-primary">🧾 Emitir Factura C</button>
+          <button type="submit" class="btn-primary">Ver vista previa →</button>
         </div>
       </form>
     </div>
   `);
 }
 
-function updateInvoiceDocPlaceholder(docType) {
-  const inp = document.getElementById('invoiceDocNumber');
-  if (!inp) return;
-  if (docType === '99') {
-    inp.placeholder = '(no requerido)';
-    inp.value = '';
-  } else if (docType === '80') {
-    inp.placeholder = 'CUIT (11 dígitos)';
-  } else if (docType === '86') {
-    inp.placeholder = 'CUIL (11 dígitos)';
-  } else {
-    inp.placeholder = 'DNI (7-8 dígitos)';
-  }
-}
+// Saves form data so user can come back from preview without losing values
+let _currentInvoiceForm = null;
 
-async function submitInvoice(e) {
+function previewInvoice(e) {
   e.preventDefault();
   if (!_currentInvoiceItem) return;
-  const item = _currentInvoiceItem;
   const data = Object.fromEntries(new FormData(e.target).entries());
   const errBox = document.getElementById('invoiceErrorBox');
-  const btn = document.getElementById('invoiceSubmitBtn');
   if (errBox) errBox.classList.add('hidden');
 
   const amount = Number(data.amount);
@@ -3896,14 +3882,189 @@ async function submitInvoice(e) {
     return;
   }
 
-  if (!confirm(`¿Confirmás emitir Factura C por $${amount.toLocaleString('es-AR')} ARS?\n\nEsta acción es REAL y queda registrada en AFIP.`)) return;
+  _currentInvoiceForm = data;
+  renderInvoicePreview();
+}
+
+function renderInvoicePreview() {
+  const item = _currentInvoiceItem;
+  const data = _currentInvoiceForm;
+  if (!item || !data) return;
+
+  const p = item.projectId ? getProject(item.projectId) : null;
+  const amount = Number(data.amount);
+  const concept = Number(data.concept) || 2;
+  const conceptLabel = concept === 1 ? 'Productos' : concept === 3 ? 'Productos y Servicios' : 'Servicios';
+  const docTypeMap = { '80': 'CUIT', '86': 'CUIL', '96': 'DNI', '99': 'Consumidor Final' };
+  const docTypeLabel = docTypeMap[data.clientDocType] || 'Consumidor Final';
+  const docNumber = data.clientDocType === '99' ? '—' : (data.clientDocNumber || '—');
+  const clientName = data.clientName?.trim() || (data.clientDocType === '99' ? 'Consumidor Final' : 'Sin especificar');
+
+  const fmtDate = (iso) => {
+    if (!iso) return '—';
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+  };
+  const fmtMoney = (n) => `$${Number(n).toLocaleString('es-AR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+  const today = todayISO();
+
+  // Conceto descripción
+  let detalle = item.concept || 'Servicios profesionales';
+  if (p) detalle += ` — ${p.name}`;
+
+  openModal(`
+    <div class="p-4 sm:p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div class="flex-1 min-w-0">
+          <h2 class="text-lg sm:text-xl font-semibold">Vista previa</h2>
+          <p class="text-xs sm:text-sm text-gray-500 mt-0.5">Verificá los datos antes de emitir en AFIP</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-xl leading-none shrink-0">✕</button>
+      </div>
+
+      <!-- Factura mock -->
+      <div class="border-2 border-gray-300 rounded-lg overflow-hidden bg-white text-[13px] mb-4">
+        <!-- Header con C centrado tipo AFIP -->
+        <div class="border-b-2 border-gray-300 grid grid-cols-[1fr_auto_1fr]">
+          <div class="p-3 sm:p-4">
+            <div class="font-bold text-base">Pragma Studio</div>
+            <div class="text-xs text-gray-600">Gaspar Quintana Ruiz</div>
+            <div class="text-xs text-gray-600 mt-1">Responsable Monotributo</div>
+          </div>
+          <div class="border-x-2 border-gray-300 flex flex-col items-center justify-center px-4 sm:px-6 py-2 bg-gray-50">
+            <div class="text-3xl sm:text-4xl font-bold leading-none">C</div>
+            <div class="text-[10px] text-gray-600 mt-0.5">COD. 11</div>
+          </div>
+          <div class="p-3 sm:p-4 text-right">
+            <div class="font-bold">FACTURA</div>
+            <div class="text-xs text-gray-600 mt-1">Pto Vta: <b>00003</b></div>
+            <div class="text-xs text-gray-600">Nro: <b class="text-gray-400">a asignar por AFIP</b></div>
+            <div class="text-xs text-gray-600 mt-1">Fecha: <b>${fmtDate(today)}</b></div>
+          </div>
+        </div>
+
+        <!-- Datos emisor -->
+        <div class="p-3 sm:p-4 border-b border-gray-200 text-xs space-y-0.5">
+          <div><span class="text-gray-500">CUIT:</span> <b>20-42440214-2</b></div>
+          <div><span class="text-gray-500">Ingresos Brutos:</span> <span class="text-gray-400">(según corresponda)</span></div>
+          <div><span class="text-gray-500">Inicio de actividades:</span> <span class="text-gray-400">(según AFIP)</span></div>
+        </div>
+
+        <!-- Cliente -->
+        <div class="p-3 sm:p-4 border-b border-gray-200">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Cliente</div>
+          <div class="font-semibold">${escapeHtml(clientName)}</div>
+          <div class="text-xs text-gray-600 mt-1">
+            <span class="text-gray-500">${escapeHtml(docTypeLabel)}:</span> <b>${escapeHtml(String(docNumber))}</b>
+          </div>
+          <div class="text-xs text-gray-600">
+            <span class="text-gray-500">Condición frente al IVA:</span> ${data.clientDocType === '99' ? 'Consumidor Final' : 'A definir'}
+          </div>
+        </div>
+
+        <!-- Período -->
+        ${concept !== 1 ? `
+          <div class="p-3 sm:p-4 border-b border-gray-200 text-xs grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-gray-500">Servicio desde</div>
+              <div class="font-medium">${fmtDate(data.serviceFromDate)}</div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-gray-500">Servicio hasta</div>
+              <div class="font-medium">${fmtDate(data.serviceToDate)}</div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-gray-500">Vto. de pago</div>
+              <div class="font-medium">${fmtDate(data.dueDate)}</div>
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Detalle -->
+        <div class="border-b border-gray-200">
+          <div class="grid grid-cols-[1fr_auto] bg-gray-100 px-3 sm:px-4 py-2 text-[10px] uppercase tracking-wider text-gray-600 font-semibold">
+            <div>Descripción</div>
+            <div>Importe</div>
+          </div>
+          <div class="grid grid-cols-[1fr_auto] px-3 sm:px-4 py-3 gap-3">
+            <div>
+              <div class="font-medium">${escapeHtml(detalle)}</div>
+              <div class="text-[11px] text-gray-500 mt-0.5">Concepto: ${conceptLabel}</div>
+            </div>
+            <div class="font-semibold text-right">${fmtMoney(amount)}</div>
+          </div>
+        </div>
+
+        <!-- Totales -->
+        <div class="p-3 sm:p-4 bg-gray-50 text-right space-y-1">
+          <div class="text-xs text-gray-500">Subtotal: <b class="text-gray-900">${fmtMoney(amount)}</b></div>
+          <div class="text-xs text-gray-500">IVA: <b class="text-gray-900">$0,00</b> <span class="text-[10px]">(Monotributo)</span></div>
+          <div class="text-base font-bold pt-1 border-t border-gray-300 mt-1">TOTAL: ${fmtMoney(amount)}</div>
+        </div>
+
+        <!-- CAE placeholder -->
+        <div class="p-3 sm:p-4 bg-amber-50 border-t border-amber-200 text-xs text-amber-900">
+          <b>CAE:</b> se asigna al confirmar · <b>Vto. CAE:</b> AFIP lo emite · <b>QR:</b> generado por AFIP
+        </div>
+      </div>
+
+      <!-- Checklist de validación -->
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-900 space-y-1">
+        <div class="font-semibold mb-1">📋 Revisá:</div>
+        <div>${data.clientDocType === '99' ? '○' : '✓'} Documento del cliente: <b>${escapeHtml(docTypeLabel)}${docNumber !== '—' ? ' ' + docNumber : ''}</b></div>
+        <div>✓ Monto: <b>${fmtMoney(amount)} ARS</b></div>
+        <div>✓ Concepto: <b>${conceptLabel}</b></div>
+        ${concept !== 1 ? `<div>✓ Período: <b>${fmtDate(data.serviceFromDate)} → ${fmtDate(data.serviceToDate)}</b></div>` : ''}
+      </div>
+
+      <div id="invoiceErrorBox2" class="hidden bg-red-50 border border-red-200 text-red-800 text-xs rounded-lg p-3 mb-3"></div>
+
+      <div class="flex flex-col-reverse sm:flex-row sm:justify-between gap-2 pt-3 border-t border-gray-100">
+        <button type="button" class="btn-ghost" onclick="backToEditInvoice()">← Volver a editar</button>
+        <button type="button" id="invoiceConfirmBtn" class="btn-primary" onclick="confirmEmitInvoice()">🧾 Confirmar y emitir en AFIP</button>
+      </div>
+    </div>
+  `);
+}
+
+function backToEditInvoice() {
+  // Re-render the form, then restore values from _currentInvoiceForm
+  const item = _currentInvoiceItem;
+  const saved = _currentInvoiceForm;
+  if (!item) return;
+  openInvoiceModal(item);
+  if (saved) {
+    setTimeout(() => {
+      const form = document.getElementById('invoiceForm');
+      if (!form) return;
+      for (const [k, v] of Object.entries(saved)) {
+        const el = form.elements[k];
+        if (el) el.value = v;
+      }
+      // sync placeholder
+      if (typeof updateInvoiceDocPlaceholder === 'function') {
+        updateInvoiceDocPlaceholder(saved.clientDocType || '99');
+        const docInp = document.getElementById('invoiceDocNumber');
+        if (docInp && saved.clientDocNumber) docInp.value = saved.clientDocNumber;
+      }
+    }, 20);
+  }
+}
+
+async function confirmEmitInvoice() {
+  if (!_currentInvoiceItem || !_currentInvoiceForm) return;
+  const item = _currentInvoiceItem;
+  const data = _currentInvoiceForm;
+  const errBox = document.getElementById('invoiceErrorBox2');
+  const btn = document.getElementById('invoiceConfirmBtn');
+  if (errBox) errBox.classList.add('hidden');
 
   btn.disabled = true;
   btn.textContent = 'Emitiendo...';
 
   try {
     const payload = {
-      amount,
+      amount: Number(data.amount),
       concept: Number(data.concept) || 2,
       clientDocType: Number(data.clientDocType) || 99,
       clientDocNumber: data.clientDocType === '99' ? 0 : Number(String(data.clientDocNumber).replace(/[^\d]/g, '')),
@@ -3913,7 +4074,6 @@ async function submitInvoice(e) {
     };
     const result = await callApi('/api/afip/emitir', { method: 'POST', body: payload });
 
-    // Guardar en state
     const incomeId = item.auto ? `auto:${item.projectId}:${item.month}` : item.id;
     const invoice = {
       id: uid(),
@@ -3939,6 +4099,8 @@ async function submitInvoice(e) {
     state.invoices.push(invoice);
     save();
 
+    _currentInvoiceForm = null;
+    _currentInvoiceItem = null;
     closeModal();
     showToast(`Factura C ${invoice.code} emitida · CAE ${invoice.cae}`, 'success');
     render();
@@ -3948,9 +4110,25 @@ async function submitInvoice(e) {
       errBox.classList.remove('hidden');
     }
     btn.disabled = false;
-    btn.textContent = '🧾 Emitir Factura C';
+    btn.textContent = '🧾 Confirmar y emitir en AFIP';
   }
 }
+
+function updateInvoiceDocPlaceholder(docType) {
+  const inp = document.getElementById('invoiceDocNumber');
+  if (!inp) return;
+  if (docType === '99') {
+    inp.placeholder = '(no requerido)';
+    inp.value = '';
+  } else if (docType === '80') {
+    inp.placeholder = 'CUIT (11 dígitos)';
+  } else if (docType === '86') {
+    inp.placeholder = 'CUIL (11 dígitos)';
+  } else {
+    inp.placeholder = 'DNI (7-8 dígitos)';
+  }
+}
+
 
 async function checkAfipStatus() {
   try {
