@@ -4654,24 +4654,26 @@ function renderFinance() {
     return s.status === 'PAID';
   };
 
-  // ===== Cash-flow real: cobrado/pagado se cuenta en el mes en que se hizo el pago =====
-  const allIncomeCashFlow = getAllCashFlowPayments('income');
-  const allExpenseCashFlow = getAllCashFlowPayments('expense');
+  // ===== Totales por DEVENGADO =====
+  // Cada item del período aporta la fracción que efectivamente se cobró/pagó,
+  // sumando cada pago con su cotización CONGELADA (así nunca se mezclan denominaciones).
+  // Esto coincide 1:1 con lo que se ve en la tabla: si un ítem está "100% cobrado" suma su total,
+  // si está "50% cobrado" suma la mitad. Carry-overs aportan 0 (ya se contaron en su mes original).
+  function paidInTargetCurrency(item, targetCur) {
+    if (item._carryOver) return 0;
+    const s = getPaymentSummary(item);
+    return s.payments.reduce((sum, p) => {
+      const amt = p.amount != null ? Number(p.amount) : s.expected;
+      const cur = p.currency || item.currency || 'ARS';
+      const rate = Number(p.exchangeRate) || Number(state.exchangeRate) || 1200;
+      return sum + convertAt(amt, cur, targetCur, rate);
+    }, 0);
+  }
 
-  // Helpers que devuelven el total en CUALQUIER moneda (ARS o USD) preservando
-  // la cotización CONGELADA de cada pago. Así nunca se mezclan denominaciones.
-  const sumInCurrency = (payments, targetCur) => payments.reduce((sum, p) =>
-    sum + convertAt(p.amount, p.currency, targetCur, p.exchangeRate), 0
-  );
-
-  const incomeInRange  = allIncomeCashFlow.filter(p => p.date && inRange(p.date, from, to));
-  const expenseInRange = allExpenseCashFlow.filter(p => p.date && inRange(p.date, from, to));
-
-  // Totales en AMBAS monedas (cada uno usa la cotización congelada de cada pago)
-  const incTotalConfirmedARS = sumInCurrency(incomeInRange,  'ARS');
-  const incTotalConfirmedUSD = sumInCurrency(incomeInRange,  'USD');
-  const expTotalPaidARS      = sumInCurrency(expenseInRange, 'ARS');
-  const expTotalPaidUSD      = sumInCurrency(expenseInRange, 'USD');
+  const incTotalConfirmedARS = incWithKind.reduce((a, i) => a + paidInTargetCurrency(i, 'ARS'), 0);
+  const incTotalConfirmedUSD = incWithKind.reduce((a, i) => a + paidInTargetCurrency(i, 'USD'), 0);
+  const expTotalPaidARS      = expWithKind.reduce((a, e) => a + paidInTargetCurrency(e, 'ARS'), 0);
+  const expTotalPaidUSD      = expWithKind.reduce((a, e) => a + paidInTargetCurrency(e, 'USD'), 0);
 
   // Para retrocompatibilidad con el resto del código que usa baseCur:
   const incTotalConfirmed = baseCur === 'USD' ? incTotalConfirmedUSD : incTotalConfirmedARS;
@@ -4687,16 +4689,31 @@ function renderFinance() {
   const balance = baseCur === 'USD' ? balanceUSD : balanceARS;
   const margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
 
-  // sumCashIn legacy para el resto del código (bar chart)
-  const sumCashIn = (payments) => sumInCurrency(payments, baseCur);
+  // Cash-flow real (paneles de auditoría): pagos con fecha de pago dentro del rango
+  const allIncomeCashFlow = getAllCashFlowPayments('income');
+  const allExpenseCashFlow = getAllCashFlowPayments('expense');
+  const sumInCurrency = (payments, targetCur) => payments.reduce((sum, p) =>
+    sum + convertAt(p.amount, p.currency, targetCur, p.exchangeRate), 0
+  );
+  const incomeInRange  = allIncomeCashFlow.filter(p => p.date && inRange(p.date, from, to));
+  const expenseInRange = allExpenseCashFlow.filter(p => p.date && inRange(p.date, from, to));
 
-  // Breakdown per month if range covers more than one month
+  // Breakdown per month si el rango cubre más de un mes — también por devengado
   const monthsInRange = monthsBetween(from, to);
   const showBreakdown = monthsInRange.length > 1;
+  function itemsForMonth(m) {
+    const lastDay = String(new Date(Number(m.slice(0,4)), Number(m.slice(5,7)), 0).getDate()).padStart(2,'0');
+    const mFrom = `${m}-01`, mTo = `${m}-${lastDay}`;
+    const ri = state.incomes.filter(i => i.date && inRange(i.date, mFrom, mTo)).map(i => ({ ...i, _kind: 'income' }));
+    const ai = getAutoIncomesInRange(mFrom, mTo).map(i => ({ ...i, _kind: 'income' }));
+    const re = state.expenses.filter(e => e.date && inRange(e.date, mFrom, mTo)).map(e => ({ ...e, _kind: 'expense' }));
+    const ae = getAutoExpensesInRange(mFrom, mTo).map(e => ({ ...e, _kind: 'expense' }));
+    return { inc: [...ai, ...ri], exp: [...ae, ...re] };
+  }
   const monthlyData = showBreakdown ? monthsInRange.map(m => {
-    // Cash flow real: pagos con fecha en este mes
-    const i = sumCashIn(allIncomeCashFlow.filter(p => p.date && p.date.startsWith(m)));
-    const e = sumCashIn(allExpenseCashFlow.filter(p => p.date && p.date.startsWith(m)));
+    const { inc: mi, exp: me } = itemsForMonth(m);
+    const i = mi.reduce((a, x) => a + paidInTargetCurrency(x, baseCur), 0);
+    const e = me.reduce((a, x) => a + paidInTargetCurrency(x, baseCur), 0);
     return { month: m, income: i, expense: e, balance: i - e };
   }) : [];
   const maxAbs = Math.max(1, ...monthlyData.map(d => Math.max(d.income, d.expense)));
