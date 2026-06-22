@@ -4654,86 +4654,238 @@ function renderFinance() {
     return s.status === 'PAID';
   };
 
-  // ===== Totales por DEVENGADO =====
-  // Cada item del período aporta la fracción que efectivamente se cobró/pagó,
-  // sumando cada pago con su cotización CONGELADA (así nunca se mezclan denominaciones).
-  // Esto coincide 1:1 con lo que se ve en la tabla: si un ítem está "100% cobrado" suma su total,
-  // si está "50% cobrado" suma la mitad. Carry-overs aportan 0 (ya se contaron en su mes original).
-  function paidInTargetCurrency(item, targetCur) {
-    if (item._carryOver) return 0;
+  // ===== Helper: cobrado/pagado de un item DENTRO de un rango de fechas =====
+  // Filtra los pagos del item por la fecha real del pago y los suma en targetCur,
+  // usando la cotización CONGELADA de cada pago (no mezcla denominaciones).
+  function paidInRangeBase(item, mFrom, mTo, targetCur) {
     const s = getPaymentSummary(item);
-    return s.payments.reduce((sum, p) => {
-      const amt = p.amount != null ? Number(p.amount) : s.expected;
-      const cur = p.currency || item.currency || 'ARS';
-      const rate = Number(p.exchangeRate) || Number(state.exchangeRate) || 1200;
-      return sum + convertAt(amt, cur, targetCur, rate);
-    }, 0);
+    return s.payments
+      .filter(p => {
+        const d = (p.date || p.paidAt || p.chargedAt || '').slice(0, 10);
+        return d && d >= mFrom && d <= mTo;
+      })
+      .reduce((sum, p) => {
+        const amt = p.amount != null ? Number(p.amount) : s.expected;
+        const cur = p.currency || item.currency || 'ARS';
+        const rate = Number(p.exchangeRate) || Number(state.exchangeRate) || 1200;
+        return sum + convertAt(amt, cur, targetCur, rate);
+      }, 0);
+  }
+  function paidInMonthBase(item, monthKey, targetCur) {
+    const lastDay = String(new Date(Number(monthKey.slice(0,4)), Number(monthKey.slice(5,7)), 0).getDate()).padStart(2,'0');
+    return paidInRangeBase(item, `${monthKey}-01`, `${monthKey}-${lastDay}`, targetCur);
   }
 
-  const incTotalConfirmedARS = incWithKind.reduce((a, i) => a + paidInTargetCurrency(i, 'ARS'), 0);
-  const incTotalConfirmedUSD = incWithKind.reduce((a, i) => a + paidInTargetCurrency(i, 'USD'), 0);
-  const expTotalPaidARS      = expWithKind.reduce((a, e) => a + paidInTargetCurrency(e, 'ARS'), 0);
-  const expTotalPaidUSD      = expWithKind.reduce((a, e) => a + paidInTargetCurrency(e, 'USD'), 0);
+  // ===== Totales por CASH BASIS =====
+  // Cada pago se cuenta en el MES en que efectivamente se hizo (no en el período del item).
+  // Si cobraste 50% en mayo y 50% en julio, mayo suma 50% y julio suma 50%.
+  const incTotalConfirmedARS = (incWithKind).reduce((a, i) => a + paidInRangeBase(i, from, to, 'ARS'), 0);
+  const incTotalConfirmedUSD = (incWithKind).reduce((a, i) => a + paidInRangeBase(i, from, to, 'USD'), 0);
+  const expTotalPaidARS      = (expWithKind).reduce((a, e) => a + paidInRangeBase(e, from, to, 'ARS'), 0);
+  const expTotalPaidUSD      = (expWithKind).reduce((a, e) => a + paidInRangeBase(e, from, to, 'USD'), 0);
+
+  // OJO: incWithKind/expWithKind incluye solo items con período dentro del rango. Falta sumar
+  // los pagos hechos en el rango cuyo item es de OTRO período (ej: cobrás en julio una factura de mayo).
+  // Para no contar dos veces, marcamos los items ya contemplados:
+  const seenIncIds = new Set(incWithKind.map(i => i.auto ? `autoinc:${i.projectId}:${i.month}` : `inc:${i.id}`));
+  const seenExpIds = new Set(expWithKind.map(e => e.auto ? `autoexp:${e.sourceExpenseId}:${e.month}` : `exp:${e.id}`));
+
+  function addForeignPaymentsToTotal(targetCur, kind) {
+    let extra = 0;
+    if (kind === 'income') {
+      (state.incomePayments || []).forEach(p => {
+        const inc = state.incomes.find(x => x.id === p.incomeId);
+        if (!inc) return;
+        if (seenIncIds.has(`inc:${inc.id}`)) return;
+        const d = (p.date || p.paidAt || '').slice(0,10);
+        if (!d || !inRange(d, from, to)) return;
+        const cur = p.currency || inc.currency || 'ARS';
+        const rate = Number(p.exchangeRate) || Number(inc.exchangeRateAtTime) || Number(state.exchangeRate) || 1200;
+        extra += convertAt(Number(p.amount)||0, cur, targetCur, rate);
+      });
+      (state.recurringChargeLog || []).forEach(r => {
+        if (seenIncIds.has(`autoinc:${r.projectId}:${r.month}`)) return;
+        const d = (r.date || r.chargedAt || '').slice(0,10);
+        if (!d || !inRange(d, from, to)) return;
+        const proj = getProject(r.projectId);
+        if (!proj) return;
+        const amount = r.amount != null ? Number(r.amount) : Number(proj.monthlyFee || 0);
+        const cur = r.currency || proj.monthlyFeeCurrency || 'ARS';
+        const rate = Number(r.exchangeRate) || Number(state.exchangeRate) || 1200;
+        extra += convertAt(amount, cur, targetCur, rate);
+      });
+      // Sintético: incomes confirmados sin payment log
+      state.incomes.forEach(i => {
+        if (seenIncIds.has(`inc:${i.id}`)) return;
+        if ((state.incomePayments || []).some(p => p.incomeId === i.id)) return;
+        if ((i.status || 'CONFIRMED') !== 'CONFIRMED') return;
+        const d = ((i.confirmedAt && i.confirmedAt.slice(0,10)) || i.date || '').slice(0,10);
+        if (!d || !inRange(d, from, to)) return;
+        const cur = i.currency || 'ARS';
+        const rate = Number(i.exchangeRateAtTime) || Number(state.exchangeRate) || 1200;
+        extra += convertAt(Number(i.amount)||0, cur, targetCur, rate);
+      });
+    } else {
+      (state.expensePayments || []).forEach(p => {
+        const exp = state.expenses.find(x => x.id === p.expenseId);
+        if (!exp) return;
+        if (seenExpIds.has(`exp:${exp.id}`)) return;
+        const d = (p.date || p.paidAt || '').slice(0,10);
+        if (!d || !inRange(d, from, to)) return;
+        const cur = p.currency || exp.currency || 'ARS';
+        const rate = Number(p.exchangeRate) || Number(exp.exchangeRateAtTime) || Number(state.exchangeRate) || 1200;
+        extra += convertAt(Number(p.amount)||0, cur, targetCur, rate);
+      });
+      (state.recurringExpensePayments || []).forEach(r => {
+        if (seenExpIds.has(`autoexp:${r.expenseId}:${r.month}`)) return;
+        const d = (r.date || r.paidAt || '').slice(0,10);
+        if (!d || !inRange(d, from, to)) return;
+        const exp = state.expenses.find(e => e.id === r.expenseId);
+        if (!exp) return;
+        const amount = r.amount != null ? Number(r.amount) : Number(exp.amount || 0);
+        const cur = r.currency || exp.currency || 'ARS';
+        const rate = Number(r.exchangeRate) || Number(state.exchangeRate) || 1200;
+        extra += convertAt(amount, cur, targetCur, rate);
+      });
+      state.expenses.forEach(e => {
+        if (seenExpIds.has(`exp:${e.id}`)) return;
+        if ((state.expensePayments || []).some(p => p.expenseId === e.id)) return;
+        if ((e.status || 'PAID') !== 'PAID') return;
+        const d = ((e.paidAt && e.paidAt.slice(0,10)) || e.date || '').slice(0,10);
+        if (!d || !inRange(d, from, to)) return;
+        const cur = e.currency || 'ARS';
+        const rate = Number(e.exchangeRateAtTime) || Number(state.exchangeRate) || 1200;
+        extra += convertAt(Number(e.amount)||0, cur, targetCur, rate);
+      });
+    }
+    return extra;
+  }
+
+  const incForeignARS = addForeignPaymentsToTotal('ARS', 'income');
+  const incForeignUSD = addForeignPaymentsToTotal('USD', 'income');
+  const expForeignARS = addForeignPaymentsToTotal('ARS', 'expense');
+  const expForeignUSD = addForeignPaymentsToTotal('USD', 'expense');
+
+  const incTotalARSFinal = incTotalConfirmedARS + incForeignARS;
+  const incTotalUSDFinal = incTotalConfirmedUSD + incForeignUSD;
+  const expTotalARSFinal = expTotalPaidARS + expForeignARS;
+  const expTotalUSDFinal = expTotalPaidUSD + expForeignUSD;
 
   // Para retrocompatibilidad con el resto del código que usa baseCur:
-  const incTotalConfirmed = baseCur === 'USD' ? incTotalConfirmedUSD : incTotalConfirmedARS;
-  const expTotalPaid      = baseCur === 'USD' ? expTotalPaidUSD      : expTotalPaidARS;
+  const incTotalConfirmed = baseCur === 'USD' ? incTotalUSDFinal : incTotalARSFinal;
+  const expTotalPaid      = baseCur === 'USD' ? expTotalUSDFinal : expTotalARSFinal;
 
   // Pendiente: lo que falta cobrar/pagar (solo se muestra en vista Mes)
+  // Solo items en su período original (sin carry-overs ni foreign-payments)
   const incTotalPending = incWithKind.reduce((a, b) => a + pendingPart(b), 0);
   const expTotalPending = expWithKind.reduce((a, b) => a + pendingPart(b), 0);
-  const incTotal = incTotalConfirmed + incTotalPending;
-  const expTotal = expTotalPaid + expTotalPending;
-  const balanceARS = incTotalConfirmedARS - expTotalPaidARS;
-  const balanceUSD = incTotalConfirmedUSD - expTotalPaidUSD;
+  const balanceARS = incTotalARSFinal - expTotalARSFinal;
+  const balanceUSD = incTotalUSDFinal - expTotalUSDFinal;
   const balance = baseCur === 'USD' ? balanceUSD : balanceARS;
   const margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
 
-  // Cash-flow real (paneles de auditoría): pagos con fecha de pago dentro del rango
+  // Cash-flow real (panel auditoría)
   const allIncomeCashFlow = getAllCashFlowPayments('income');
   const allExpenseCashFlow = getAllCashFlowPayments('expense');
-  const sumInCurrency = (payments, targetCur) => payments.reduce((sum, p) =>
-    sum + convertAt(p.amount, p.currency, targetCur, p.exchangeRate), 0
-  );
   const incomeInRange  = allIncomeCashFlow.filter(p => p.date && inRange(p.date, from, to));
   const expenseInRange = allExpenseCashFlow.filter(p => p.date && inRange(p.date, from, to));
 
-  // Breakdown per month si el rango cubre más de un mes — también por devengado
+  // Breakdown per month — también cash basis
   const monthsInRange = monthsBetween(from, to);
   const showBreakdown = monthsInRange.length > 1;
-  function itemsForMonth(m) {
+  const sumCashIn = (payments, mFrom, mTo, targetCur) => payments
+    .filter(p => p.date && p.date >= mFrom && p.date <= mTo)
+    .reduce((sum, p) => sum + convertAt(p.amount, p.currency, targetCur, p.exchangeRate), 0);
+  const monthlyData = showBreakdown ? monthsInRange.map(m => {
     const lastDay = String(new Date(Number(m.slice(0,4)), Number(m.slice(5,7)), 0).getDate()).padStart(2,'0');
     const mFrom = `${m}-01`, mTo = `${m}-${lastDay}`;
-    const ri = state.incomes.filter(i => i.date && inRange(i.date, mFrom, mTo)).map(i => ({ ...i, _kind: 'income' }));
-    const ai = getAutoIncomesInRange(mFrom, mTo).map(i => ({ ...i, _kind: 'income' }));
-    const re = state.expenses.filter(e => e.date && inRange(e.date, mFrom, mTo)).map(e => ({ ...e, _kind: 'expense' }));
-    const ae = getAutoExpensesInRange(mFrom, mTo).map(e => ({ ...e, _kind: 'expense' }));
-    return { inc: [...ai, ...ri], exp: [...ae, ...re] };
-  }
-  const monthlyData = showBreakdown ? monthsInRange.map(m => {
-    const { inc: mi, exp: me } = itemsForMonth(m);
-    const i = mi.reduce((a, x) => a + paidInTargetCurrency(x, baseCur), 0);
-    const e = me.reduce((a, x) => a + paidInTargetCurrency(x, baseCur), 0);
+    const i = sumCashIn(allIncomeCashFlow, mFrom, mTo, baseCur);
+    const e = sumCashIn(allExpenseCashFlow, mFrom, mTo, baseCur);
     return { month: m, income: i, expense: e, balance: i - e };
   }) : [];
   const maxAbs = Math.max(1, ...monthlyData.map(d => Math.max(d.income, d.expense)));
 
-  // Group all items by month for the unified table
+  // ===== Construcción de filas: cash basis =====
+  // Cada par (mes, item) genera UNA fila. Un mismo item puede aparecer en varios meses
+  // si tuvo pagos en distintos meses (ej: 50% mayo + 50% julio → 2 filas).
   const itemsByMonth = {};
-  inc.forEach(i => {
-    // Arrastres se muestran en el mes vigente, no en el original
-    const m = i._carryOver ? financeMonth : (i.month || i.date || '').slice(0,7);
+  const rowSeen = new Set(); // `${monthKey}|${itemKey}`
+  function addRow(m, item) {
+    const itemKey = item._carryOver
+      ? `co:${item.id || item.projectId || item.sourceExpenseId}:${item.month || ''}`
+      : item.auto
+        ? `${item._kind}-auto:${item.projectId || item.sourceExpenseId}:${item.month}`
+        : `${item._kind}:${item.id}`;
+    const k = `${m}|${itemKey}`;
+    if (rowSeen.has(k)) return;
+    rowSeen.add(k);
     if (!itemsByMonth[m]) itemsByMonth[m] = [];
-    itemsByMonth[m].push({ ...i, _kind: 'income' });
+    itemsByMonth[m].push({ ...item, _monthKey: m });
+  }
+
+  // (A) Items en su PERÍODO ORIGINAL dentro del rango (incluye carry-overs en vista mes)
+  inc.forEach(i => {
+    const m = i._carryOver ? financeMonth : (i.month || i.date || '').slice(0,7);
+    addRow(m, { ...i, _kind: 'income' });
   });
   exp.forEach(e => {
     const m = e._carryOver ? financeMonth : (e.date || '').slice(0,7);
-    if (!itemsByMonth[m]) itemsByMonth[m] = [];
-    itemsByMonth[m].push({ ...e, _kind: 'expense' });
+    addRow(m, { ...e, _kind: 'expense' });
   });
+
+  // (B) Items con PAGOS dentro del rango pero período en OTRO mes → aparecen también en el mes del pago
+  function addForeignPaymentRows() {
+    (state.incomePayments || []).forEach(p => {
+      const inc = state.incomes.find(x => x.id === p.incomeId);
+      if (!inc) return;
+      const d = (p.date || p.paidAt || '').slice(0,10);
+      if (!d || !inRange(d, from, to)) return;
+      const payM = d.slice(0,7);
+      const itemM = (inc.date || '').slice(0,7);
+      if (payM === itemM) return; // ya está en (A)
+      addRow(payM, { ...inc, _kind: 'income', _foreignPayment: true, _originalPeriod: itemM });
+    });
+    (state.expensePayments || []).forEach(p => {
+      const exp = state.expenses.find(x => x.id === p.expenseId);
+      if (!exp) return;
+      const d = (p.date || p.paidAt || '').slice(0,10);
+      if (!d || !inRange(d, from, to)) return;
+      const payM = d.slice(0,7);
+      const itemM = (exp.date || '').slice(0,7);
+      if (payM === itemM) return;
+      addRow(payM, { ...exp, _kind: 'expense', _foreignPayment: true, _originalPeriod: itemM });
+    });
+    (state.recurringChargeLog || []).forEach(r => {
+      const d = (r.date || r.chargedAt || '').slice(0,10);
+      if (!d || !inRange(d, from, to)) return;
+      const payM = d.slice(0,7);
+      if (payM === r.month) return;
+      const lastDay = String(new Date(Number(r.month.slice(0,4)), Number(r.month.slice(5,7)), 0).getDate()).padStart(2,'0');
+      const autos = getAutoIncomesInRange(`${r.month}-01`, `${r.month}-${lastDay}`);
+      const match = autos.find(a => a.projectId === r.projectId && a.month === r.month);
+      if (match) addRow(payM, { ...match, _kind: 'income', _foreignPayment: true, _originalPeriod: r.month });
+    });
+    (state.recurringExpensePayments || []).forEach(r => {
+      const d = (r.date || r.paidAt || '').slice(0,10);
+      if (!d || !inRange(d, from, to)) return;
+      const payM = d.slice(0,7);
+      if (payM === r.month) return;
+      const lastDay = String(new Date(Number(r.month.slice(0,4)), Number(r.month.slice(5,7)), 0).getDate()).padStart(2,'0');
+      const autos = getAutoExpensesInRange(`${r.month}-01`, `${r.month}-${lastDay}`);
+      const match = autos.find(a => a.sourceExpenseId === r.expenseId && a.month === r.month);
+      if (match) addRow(payM, { ...match, _kind: 'expense', _foreignPayment: true, _originalPeriod: r.month });
+    });
+  }
+  addForeignPaymentRows();
+
   Object.keys(itemsByMonth).forEach(m => {
-    // Arrastres primero, luego AUTO, luego manuales
-    itemsByMonth[m].sort((a,b) => (b._carryOver?1:0) - (a._carryOver?1:0) || (b.auto?1:0) - (a.auto?1:0) || (a.concept||'').localeCompare(b.concept||''));
+    // Arrastres primero, luego foreign-payment, luego AUTO, luego manuales
+    itemsByMonth[m].sort((a,b) =>
+      (b._carryOver?1:0) - (a._carryOver?1:0)
+      || (b._foreignPayment?1:0) - (a._foreignPayment?1:0)
+      || (b.auto?1:0) - (a.auto?1:0)
+      || (a.concept||'').localeCompare(b.concept||'')
+    );
   });
   const sortedMonths = Object.keys(itemsByMonth).sort();
 
@@ -4909,6 +5061,33 @@ function renderFinance() {
                     const status = getPaymentChip(it);
                     const sum = getPaymentSummary(it);
                     const isPending = sum.status !== 'PAID';
+                    // ===== Monto a mostrar en INGRESO/EGRESO =====
+                    // - Carry-over: muestra el pendiente
+                    // - Foreign-payment: muestra el pago hecho en ESTE mes
+                    // - Original period:
+                    //     · Si está 100% cobrado en este mismo mes → muestra el total (igual que antes)
+                    //     · Si hay pagos parciales → muestra lo cobrado en este mes (cash basis real)
+                    //     · Si nada cobrado aún → muestra el total como "esperado" (con chip Pendiente)
+                    const paidThisMonthARS = it._carryOver ? 0 : paidInMonthBase(it, it._monthKey, 'ARS');
+                    const paidThisMonthUSD = it._carryOver ? 0 : paidInMonthBase(it, it._monthKey, 'USD');
+                    const paidThisMonthOrig = it._carryOver ? 0 : paidInMonthBase(it, it._monthKey, it.currency || 'ARS');
+                    const hasPaymentThisMonth = paidThisMonthARS > 0;
+                    let displayAmount, displaySubtext = '';
+                    if (it._carryOver) {
+                      displayAmount = it._carryOverRemaining;
+                    } else if (it._foreignPayment) {
+                      // Solo el pago de este mes; el "from" period va como note
+                      displayAmount = paidThisMonthOrig;
+                      const [yy, mm] = it._originalPeriod.split('-');
+                      displaySubtext = `pago de ${MONTH_NAMES_SHORT[Number(mm)-1]} ${yy.slice(2)}`;
+                    } else if (hasPaymentThisMonth && sum.status !== 'PAID') {
+                      // Partial paid this month: show what was paid this month
+                      displayAmount = paidThisMonthOrig;
+                      displaySubtext = `de ${fmtAmount(it.amount, it.currency)} total`;
+                    } else {
+                      // Full or no payment: show item amount
+                      displayAmount = it.amount;
+                    }
                     return `
                       <tr class="border-t border-gray-100 hover:bg-gray-50 group">
                         ${idx === 0 ? `<td class="px-3 md:px-5 py-3 align-top font-medium text-gray-700 bg-gray-50/50" rowspan="${items.length}">${monthLabel}</td>` : ''}
@@ -4916,24 +5095,27 @@ function renderFinance() {
                           <div class="flex items-center gap-2 flex-wrap">
                             ${it.auto ? '<span class="text-[10px] chip bg-blue-100 text-blue-700">AUTO</span>' : ''}
                             ${it._carryOver ? `<span class="text-[10px] chip bg-amber-100 text-amber-800" title="Arrastrado desde un mes anterior por estar pendiente">ARRASTRE ${MONTH_NAMES_SHORT[Number(it._carryOverFrom.split('-')[1])-1]} ${it._carryOverFrom.split('-')[0].slice(2)}</span>` : ''}
+                            ${it._foreignPayment ? `<span class="text-[10px] chip bg-cyan-100 text-cyan-800" title="Pago hecho este mes de un comprobante de otro período">PAGO DIFERIDO</span>` : ''}
                             <span class="font-medium truncate">${escapeHtml(it.concept)}</span>
                           </div>
                           ${p ? `<div class="text-xs text-gray-500 mt-0.5">${escapeHtml(p.name)}${it.category && !isInc ? ' · ' + EXPENSE_CAT[it.category] : ''}</div>` : (it.category && !isInc ? `<div class="text-xs text-gray-500 mt-0.5">${EXPENSE_CAT[it.category]}</div>` : '')}
                         </td>
-                        <td class="px-3 py-2.5 text-right ${isInc ? 'text-green-700 font-semibold' : 'text-gray-300'}">
+                        <td class="px-3 py-2.5 text-right ${isInc ? (it._carryOver ? 'text-amber-700 font-semibold' : 'text-green-700 font-semibold') : 'text-gray-300'}">
                           ${isInc ? `
-                            ${it._carryOver
-                              ? `${fmtAmount(it._carryOverRemaining, it.currency)} <span class="text-[10px] text-gray-400 font-normal">pendiente</span>`
-                              : fmtAmount(it.amount, it.currency)}
-                            ${it.currency !== baseCur && getEffectiveRate(it) && !it._carryOver ? `<div class="text-[10px] text-gray-400 font-normal" title="Cotización al momento del cobro">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} ${(it.auto?isMonthCharged(it.projectId,it.month):isIncConfirmed(it))?'🔒':''} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
+                            ${fmtAmount(displayAmount, it.currency)}
+                            ${it._carryOver ? '<span class="text-[10px] text-gray-400 font-normal">pendiente</span>' : ''}
+                            ${displaySubtext ? `<div class="text-[10px] text-gray-500 font-normal italic">${displaySubtext}</div>` : ''}
+                            ${it.currency !== baseCur && !it._carryOver && hasPaymentThisMonth ? `<div class="text-[10px] text-gray-400 font-normal" title="Cotización al momento del cobro">${fmtAmount(baseCur==='USD'?paidThisMonthUSD:paidThisMonthARS, baseCur)} 🔒</div>` : ''}
+                            ${it.currency !== baseCur && it._carryOver && getEffectiveRate(it) ? `<div class="text-[10px] text-gray-400 font-normal">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
                           ` : '—'}
                         </td>
-                        <td class="px-3 py-2.5 text-right ${!isInc ? 'text-red-600 font-semibold' : 'text-gray-300'}">
+                        <td class="px-3 py-2.5 text-right ${!isInc ? (it._carryOver ? 'text-amber-700 font-semibold' : 'text-red-600 font-semibold') : 'text-gray-300'}">
                           ${!isInc ? `
-                            ${it._carryOver
-                              ? `${fmtAmount(it._carryOverRemaining, it.currency)} <span class="text-[10px] text-gray-400 font-normal">pendiente</span>`
-                              : fmtAmount(it.amount, it.currency)}
-                            ${it.currency !== baseCur && getEffectiveRate(it) && !it._carryOver ? `<div class="text-[10px] text-gray-400 font-normal">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} ${isExpPaid(it)?'🔒':''} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
+                            ${fmtAmount(displayAmount, it.currency)}
+                            ${it._carryOver ? '<span class="text-[10px] text-gray-400 font-normal">pendiente</span>' : ''}
+                            ${displaySubtext ? `<div class="text-[10px] text-gray-500 font-normal italic">${displaySubtext}</div>` : ''}
+                            ${it.currency !== baseCur && !it._carryOver && hasPaymentThisMonth ? `<div class="text-[10px] text-gray-400 font-normal">${fmtAmount(baseCur==='USD'?paidThisMonthUSD:paidThisMonthARS, baseCur)} 🔒</div>` : ''}
+                            ${it.currency !== baseCur && it._carryOver && getEffectiveRate(it) ? `<div class="text-[10px] text-gray-400 font-normal">${fmtAmount(toBaseCurrencyForItem(it, baseCur), baseCur)} @ $${getEffectiveRate(it).toLocaleString('es-AR')}</div>` : ''}
                           ` : '—'}
                         </td>
                         <td class="px-3 py-2.5">
