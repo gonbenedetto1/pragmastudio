@@ -99,9 +99,20 @@ module.exports = async function handler(req, res) {
     });
   } catch (err) {
     console.error('AFIP error:', err);
+    // Saca todo el detalle posible para diagnosticar
+    const detail = {
+      message: err?.message,
+      status: err?.response?.status,
+      statusText: err?.response?.statusText,
+      data: err?.response?.data,
+      url: err?.config?.url,
+      method: err?.config?.method,
+      code: err?.code,
+    };
+    console.error('AFIP error detail:', JSON.stringify(detail, null, 2));
     return res.status(500).json({
       error: err?.message || 'Error al emitir factura',
-      detail: String(err),
+      detail,
     });
   }
 };
