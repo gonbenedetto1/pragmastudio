@@ -5296,12 +5296,12 @@ function renderFinance() {
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         <div class="card p-4 md:p-5">
           <div class="text-xs text-gray-500">${showPending ? 'Cobrado' : 'Ingresos'}</div>
-          <div class="text-xl md:text-2xl font-semibold text-green-700">${fmtAmount(baseCur==='USD'?incTotalConfirmedUSD:incTotalConfirmedARS, baseCur)}</div>
+          <div class="text-xl md:text-2xl font-semibold text-green-700">${fmtAmount(baseCur==='USD'?incTotalUSDFinal:incTotalARSFinal, baseCur)}</div>
           ${showPending && incTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(incTotalPending, baseCur)} esperado este mes</div>` : ''}
         </div>
         <div class="card p-4 md:p-5">
           <div class="text-xs text-gray-500">${showPending ? 'Pagado' : 'Gastos'}</div>
-          <div class="text-xl md:text-2xl font-semibold text-red-600">${fmtAmount(baseCur==='USD'?expTotalPaidUSD:expTotalPaidARS, baseCur)}</div>
+          <div class="text-xl md:text-2xl font-semibold text-red-600">${fmtAmount(baseCur==='USD'?expTotalUSDFinal:expTotalARSFinal, baseCur)}</div>
           ${showPending && expTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(expTotalPending, baseCur)} esperado este mes</div>` : ''}
         </div>
         <div class="card p-4 md:p-5">
@@ -5502,8 +5502,8 @@ function renderFinance() {
               <tfoot class="bg-gray-50 font-semibold border-t-2 border-gray-200">
                 <tr>
                   <td colspan="2" class="px-3 md:px-5 py-3 text-right text-xs uppercase tracking-wider text-gray-500">Total confirmado (${baseCur})</td>
-                  <td class="px-3 py-3 text-right text-green-700">${fmtAmount(baseCur==='USD'?incTotalConfirmedUSD:incTotalConfirmedARS, baseCur)}</td>
-                  <td class="px-3 py-3 text-right text-red-600">${fmtAmount(baseCur==='USD'?expTotalPaidUSD:expTotalPaidARS, baseCur)}</td>
+                  <td class="px-3 py-3 text-right text-green-700">${fmtAmount(baseCur==='USD'?incTotalUSDFinal:incTotalARSFinal, baseCur)}</td>
+                  <td class="px-3 py-3 text-right text-red-600">${fmtAmount(baseCur==='USD'?expTotalUSDFinal:expTotalARSFinal, baseCur)}</td>
                   <td colspan="2" class="px-3 md:px-5 py-3 text-right ${balance>=0?'text-green-700':'text-red-600'}">${fmtAmount(balance, baseCur)}</td>
                 </tr>
                 ${showPending && (incTotalPending > 0 || expTotalPending > 0) ? `
