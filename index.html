@@ -5407,10 +5407,8 @@ function renderFinance() {
                     if (it._carryOver) {
                       displayAmount = it._carryOverRemaining;
                     } else if (it._foreignPayment) {
-                      // Solo el pago de este mes; el "from" period va como note
+                      // Solo el pago de este mes; la chip ARRASTRE ya muestra el período
                       displayAmount = paidThisMonthOrig;
-                      const [yy, mm] = it._originalPeriod.split('-');
-                      displaySubtext = `pago de ${MONTH_NAMES_SHORT[Number(mm)-1]} ${yy.slice(2)}`;
                     } else if (hasPaymentThisMonth && sum.status !== 'PAID') {
                       // Partial paid this month: show what was paid this month
                       displayAmount = paidThisMonthOrig;
@@ -5419,14 +5417,28 @@ function renderFinance() {
                       // Full or no payment: show item amount
                       displayAmount = it.amount;
                     }
+                    // Chip context-aware: para ARRASTRE/foreign-payment refleja LO QUE PASÓ ESTE MES,
+                    // no el estado global (que sería confuso si el item ya está 100% pagado en otros meses)
+                    let rowStatus;
+                    if (it._carryOver && !hasPaymentThisMonth) {
+                      rowStatus = { label: 'Pendiente', color: 'bg-amber-100 text-amber-800' };
+                    } else if (it._foreignPayment || (it._carryOver && hasPaymentThisMonth)) {
+                      rowStatus = { label: isInc ? 'Cobrado este mes' : 'Pagado este mes', color: isInc ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700' };
+                    } else {
+                      rowStatus = status;
+                    }
                     return `
                       <tr class="border-t border-gray-100 hover:bg-gray-50 group">
                         ${idx === 0 ? `<td class="px-3 md:px-5 py-3 align-top font-medium text-gray-700 bg-gray-50/50" rowspan="${items.length}">${monthLabel}</td>` : ''}
                         <td class="px-3 py-2.5">
                           <div class="flex items-center gap-2 flex-wrap">
                             ${it.auto ? '<span class="text-[10px] chip bg-blue-100 text-blue-700">AUTO</span>' : ''}
-                            ${it._carryOver ? `<span class="text-[10px] chip bg-amber-100 text-amber-800" title="Arrastrado desde un mes anterior por estar pendiente">ARRASTRE ${MONTH_NAMES_SHORT[Number(it._carryOverFrom.split('-')[1])-1]} ${it._carryOverFrom.split('-')[0].slice(2)}</span>` : ''}
-                            ${it._foreignPayment ? `<span class="text-[10px] chip bg-cyan-100 text-cyan-800" title="Pago hecho este mes de un comprobante de otro período">PAGO DIFERIDO</span>` : ''}
+                            ${(() => {
+                              const fromPeriod = it._carryOver ? it._carryOverFrom : (it._foreignPayment ? it._originalPeriod : null);
+                              if (!fromPeriod) return '';
+                              const [yy, mm] = fromPeriod.split('-');
+                              return `<span class="text-[10px] chip bg-amber-100 text-amber-800" title="Comprobante con período en ${fromPeriod}">ARRASTRE ${MONTH_NAMES_SHORT[Number(mm)-1]} ${yy.slice(2)}</span>`;
+                            })()}
                             <span class="font-medium truncate">${escapeHtml(it.concept)}</span>
                           </div>
                           ${p ? `<div class="text-xs text-gray-500 mt-0.5">${escapeHtml(p.name)}${it.category && !isInc ? ' · ' + EXPENSE_CAT[it.category] : ''}</div>` : (it.category && !isInc ? `<div class="text-xs text-gray-500 mt-0.5">${EXPENSE_CAT[it.category]}</div>` : '')}
@@ -5450,18 +5462,18 @@ function renderFinance() {
                           ` : '—'}
                         </td>
                         <td class="px-3 py-2.5">
-                          <button onclick='openPaymentsModal(${JSON.stringify(it).replace(/'/g, "&apos;")})' class="chip ${status.color} cursor-pointer hover:opacity-80" title="Gestionar pagos (parciales o total)">${status.label}</button>
+                          <button onclick='openPaymentsModal(${JSON.stringify(it).replace(/'/g, "&apos;")})' class="chip ${rowStatus.color} cursor-pointer hover:opacity-80" title="Gestionar pagos (parciales o total)">${rowStatus.label}</button>
                         </td>
                         <td class="px-3 md:px-5 py-2.5 text-right">
                           <div class="flex items-center justify-end gap-1">
-                            ${isInc && (() => {
+                            ${isInc ? (() => {
                               const invs = getAllInvoicesFor(it);
                               if (invs.length === 0) return '';
                               if (invs.length === 1) {
                                 return `<button onclick='openInvoicePdf(${JSON.stringify(invs[0]).replace(/"/g, "&quot;")})' class="text-[10px] chip bg-purple-100 text-purple-700 hover:bg-purple-200 cursor-pointer transition" title="Click para descargar PDF · CAE ${invs[0].cae}">🧾 ${escapeHtml(invs[0].code || '#' + invs[0].number)}</button>`;
                               }
                               return `<button onclick='openInvoiceListModal(${JSON.stringify(it).replace(/"/g, "&quot;")})' class="text-[10px] chip bg-purple-100 text-purple-700 hover:bg-purple-200 cursor-pointer transition" title="Click para ver las ${invs.length} facturas">🧾 ${invs.length} facturas</button>`;
-                            })()}
+                            })() : ''}
                             ${isInc && canEmitInvoice(it) ? `
                               <button onclick='openInvoiceModal(${JSON.stringify(it).replace(/"/g, "&quot;")})' class="text-purple-700 hover:bg-purple-50 p-1.5 rounded-md transition" title="${getAllInvoicesFor(it).length > 0 ? 'Emitir factura por saldo pendiente' : 'Emitir factura AFIP'}">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="14" x2="15" y2="14"/><line x1="9" y1="18" x2="15" y2="18"/></svg>
