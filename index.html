@@ -233,7 +233,7 @@ const DEFAULT_STATE = {
   exchangeRateSource: 'manual',   // 'manual' | 'blue' | 'oficial' | 'mep' | 'cripto' | 'tarjeta'
   exchangeRateUpdatedAt: null,
   budgets: [],                    // Presupuestos: { id, code, clientName, category, pricingModel, currency, status, items, riskFactors, contingencyPct, ... }
-  invoices: [],                   // Facturas AFIP: { id, incomeId, projectId, cae, number, ptoVta, cbteTipo, typeName, date, amount, currency, clientName, clientDocType, clientDocNumber, issuedAt, issuedBy }
+  invoices: [],                   // Facturas AFIP: { id, incomeId, projectId, cae, number, ptoVta, cbteTipo, typeName, date, amount, currency, clientName, clientDocType, clientDocNumber, condicionIVAReceptorId, issuedAt, issuedBy }
   clients: [],                    // Clientes (datos fiscales): { id, name, docType, docNumber, condicionIVA, notes }
 };
 
@@ -3875,8 +3875,19 @@ const CLIENT_DOC_TYPES = [
   { v: '96', label: 'DNI' },
 ];
 const DOC_TYPE_LABELS = CLIENT_DOC_TYPES.reduce((m, d) => (m[d.v] = d.label, m), {});
-// Condición frente al IVA (informativa; el backend actual no la envía a AFIP).
-const CONDICION_IVA = ['Responsable Inscripto', 'Monotributo', 'Exento', 'Consumidor Final'];
+// Condición frente al IVA del receptor. Códigos oficiales AFIP (FEParamGetCondicionIvaReceptor).
+// Obligatorio en el comprobante desde RG 5616 (abril 2025), también para Factura C.
+const CONDICION_IVA_RECEPTOR = [
+  { code: 5, label: 'Consumidor Final' },
+  { code: 1, label: 'Responsable Inscripto' },
+  { code: 6, label: 'Monotributo' },
+  { code: 4, label: 'Exento' },
+];
+const CONDICION_IVA = CONDICION_IVA_RECEPTOR.map(c => c.label);
+const CONDICION_IVA_CODES = CONDICION_IVA_RECEPTOR.reduce((m, c) => (m[c.label] = c.code, m), {});
+const CONDICION_IVA_LABELS = CONDICION_IVA_RECEPTOR.reduce((m, c) => (m[c.code] = c.label, m), {});
+// Convierte la condición guardada en el cliente (label) al código AFIP; default Consumidor Final (5).
+function condicionIVACode(label) { return CONDICION_IVA_CODES[label] || 5; }
 
 function _incomeIdFor(item) {
   if (!item || !item.id) return null;
@@ -3967,6 +3978,8 @@ function openInvoiceModal(item) {
   const defaultDocType = client?.docType || (projTaxId.length === 11 ? '80' : '99');
   const defaultDocNumber = projTaxId;
   const defaultName = client?.name || p?.companyName || p?.contactName || p?.name || '';
+  // Condición IVA del receptor (obligatorio AFIP). Desde el cliente; si no, Consumidor Final.
+  const defaultCondCode = client?.condicionIVA ? condicionIVACode(client.condicionIVA) : 5;
 
   // Fechas servicio: por defecto el mes del ingreso (timezone-safe)
   const monthStr = item.month || todayISO().slice(0, 7);
@@ -4039,6 +4052,13 @@ function openInvoiceModal(item) {
             <label class="text-xs text-gray-500">Número (sin guiones)</label>
             <input id="invoiceDocNumber" name="clientDocNumber" class="input" value="${escapeAttr(defaultDocNumber)}" placeholder="${defaultDocType==='99'?'(no requerido)':'Ej: 20424402142'}" />
           </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Condición frente al IVA <span class="text-gray-400">(obligatorio AFIP)</span></label>
+          <select name="condicionIVAReceptor" class="input">
+            ${CONDICION_IVA_RECEPTOR.map(c => `<option value="${c.code}" ${defaultCondCode===c.code?'selected':''}>${c.label}</option>`).join('')}
+          </select>
         </div>
 
         <div>
@@ -4185,7 +4205,7 @@ function renderInvoicePreview() {
             <span class="text-gray-500">${escapeHtml(docTypeLabel)}:</span> <b>${escapeHtml(String(docNumber))}</b>
           </div>
           <div class="text-xs text-gray-600">
-            <span class="text-gray-500">Condición frente al IVA:</span> ${data.clientDocType === '99' ? 'Consumidor Final' : 'A definir'}
+            <span class="text-gray-500">Condición frente al IVA:</span> ${escapeHtml(CONDICION_IVA_LABELS[Number(data.condicionIVAReceptor)] || 'Consumidor Final')}
           </div>
         </div>
 
@@ -4324,6 +4344,7 @@ async function confirmEmitInvoice() {
       concept: Number(data.concept) || 2,
       clientDocType: Number(data.clientDocType) || 99,
       clientDocNumber: data.clientDocType === '99' ? 0 : Number(String(data.clientDocNumber).replace(/[^\d]/g, '')),
+      condicionIVAReceptorId: Number(data.condicionIVAReceptor) || 5,
       serviceFromDate: data.serviceFromDate,
       serviceToDate: data.serviceToDate,
       dueDate: data.dueDate,
@@ -4352,6 +4373,7 @@ async function confirmEmitInvoice() {
       clientName: data.clientName || '',
       clientDocType: payload.clientDocType,
       clientDocNumber: payload.clientDocNumber,
+      condicionIVAReceptorId: payload.condicionIVAReceptorId,
       issuedAt: result.issuedAt,
       issuedBy: result.issuedBy,
       // Snapshot del item original para reconstruir PDF
@@ -4477,6 +4499,8 @@ function openInvoicePdf(invoice) {
   const docTypeLabel = docTypeMap[invoice.clientDocType] || 'Consumidor Final';
   const docNumber = invoice.clientDocType === 99 ? '—' : (invoice.clientDocNumber || '—');
   const clientName = invoice.clientName || (invoice.clientDocType === 99 ? 'Consumidor Final' : 'Sin especificar');
+  // Condición IVA del receptor: usa el código guardado; facturas viejas caen a una heurística por doc.
+  const condLabel = CONDICION_IVA_LABELS[invoice.condicionIVAReceptorId] || (invoice.clientDocType === 99 ? 'Consumidor Final' : 'Responsable Inscripto');
   const concept = invoice._concept || 2;
   const conceptLabel = concept === 1 ? 'Productos' : concept === 3 ? 'Productos y Servicios' : 'Servicios';
   let detalle = invoice._itemConcept || 'Servicios profesionales';
@@ -4577,7 +4601,7 @@ function openInvoicePdf(invoice) {
     </div>
     <div class="col">
       <div class="label">Condición frente al IVA</div>
-      <div class="val">${invoice.clientDocType === 99 ? 'Consumidor Final' : 'A definir'}</div>
+      <div class="val">${escapeHtml(condLabel)}</div>
       <div class="val" style="margin-top:6px;"><span class="label" style="display:inline">Cond. de venta:</span> Contado / Transferencia</div>
     </div>
   </div>
