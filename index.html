@@ -4898,6 +4898,82 @@ function setBaseCurrency(cur) {
   render();
 }
 
+function openFinanceBreakdown(kind) {
+  const audit = window._financeAudit;
+  if (!audit) { alert('Recargá la página y probá de nuevo'); return; }
+  const rows = kind === 'income' ? audit.income : audit.expense;
+  const totalARS = kind === 'income' ? audit.totalIncARS : audit.totalExpARS;
+  const totalUSD = kind === 'income' ? audit.totalIncUSD : audit.totalExpUSD;
+  const baseCur = audit.baseCur;
+  const title = kind === 'income' ? 'Detalle de Cobrado' : 'Detalle de Pagado';
+  const color = kind === 'income' ? 'text-green-700' : 'text-red-600';
+  const rateNow = Number(state.exchangeRate) || 1200;
+
+  // Ordenamos por mes y monto descendente
+  const sorted = [...rows].sort((a,b) => a.monthKey.localeCompare(b.monthKey) || b.arsAmt - a.arsAmt);
+
+  openModal(`
+    <div class="p-6 inv-slide-in">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold">${title}</h2>
+          <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(audit.label)} · Tipo cambio actual $${rateNow.toLocaleString('es-AR')}</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-xl leading-none">✕</button>
+      </div>
+
+      <div class="bg-gray-50 rounded-lg p-4 mb-4 grid grid-cols-2 gap-3">
+        <div>
+          <div class="text-[10px] uppercase tracking-wider text-gray-500">Total en ARS</div>
+          <div class="text-lg font-bold ${color}">${fmtAmount(totalARS, 'ARS')}</div>
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-wider text-gray-500">Total en USD</div>
+          <div class="text-lg font-bold ${color}">${fmtAmount(totalUSD, 'USD')}</div>
+        </div>
+      </div>
+
+      <div class="text-xs text-gray-500 mb-2 flex items-center justify-between">
+        <span>${sorted.length} contribuciones · cada pago con su cotización congelada</span>
+      </div>
+
+      <div class="max-h-96 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100">
+        ${sorted.length === 0 ? '<div class="p-6 text-center text-gray-400 text-sm">Sin movimientos en el período.</div>' : sorted.map(r => {
+          const [yy, mm] = r.monthKey.split('-');
+          const monthLabel = `${MONTH_NAMES_SHORT[Number(mm)-1]} '${yy.slice(2)}`;
+          const it = r.it;
+          const isCarry = it._carryOver;
+          const isForeign = it._foreignPayment;
+          const chipLabel = isCarry ? `arrastre ${it._carryOverFrom || ''}` : isForeign ? `arrastre ${it._originalPeriod || ''}` : (it.auto ? 'auto' : 'manual');
+          const p = it.projectId ? getProject(it.projectId) : null;
+          return `
+            <div class="flex items-center gap-3 p-3 hover:bg-gray-50">
+              <div class="text-[10px] font-semibold text-gray-500 uppercase w-14 shrink-0">${monthLabel}</div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium truncate">${escapeHtml(it.concept || '')}</div>
+                <div class="text-[10px] text-gray-500 mt-0.5">${escapeHtml(chipLabel)}${p ? ' · ' + escapeHtml(p.name) : ''}</div>
+              </div>
+              <div class="text-right shrink-0">
+                <div class="text-sm font-semibold ${color}">${fmtAmount(baseCur === 'USD' ? r.usdAmt : r.arsAmt, baseCur)}</div>
+                <div class="text-[10px] text-gray-400">${fmtAmount(baseCur === 'USD' ? r.arsAmt : r.usdAmt, baseCur === 'USD' ? 'ARS' : 'USD')}</div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="mt-3 text-[11px] text-gray-500 leading-relaxed">
+        <b>Cash basis</b>: cada pago cuenta en el mes en que se hizo, no en el período del comprobante.
+        Los importes en la otra moneda usan el <b>tipo de cambio congelado al momento del pago</b>.
+      </div>
+
+      <div class="flex justify-end pt-4 mt-4 border-t border-gray-100">
+        <button class="btn-ghost" onclick="closeModal()">Cerrar</button>
+      </div>
+    </div>
+  `);
+}
+
 function getDisplayYear() {
   if (financeMode === 'year') return Number(financeYear);
   if (financeMode === 'range') return Number((financeFrom || todayISO()).slice(0,4));
@@ -5007,113 +5083,17 @@ function renderFinance() {
     return paidInRangeBase(item, `${monthKey}-01`, `${monthKey}-${lastDay}`, targetCur);
   }
 
-  // ===== Totales por CASH BASIS =====
-  // Cada pago se cuenta en el MES en que efectivamente se hizo (no en el período del item).
-  // Si cobraste 50% en mayo y 50% en julio, mayo suma 50% y julio suma 50%.
-  const incTotalConfirmedARS = (incWithKind).reduce((a, i) => a + paidInRangeBase(i, from, to, 'ARS'), 0);
-  const incTotalConfirmedUSD = (incWithKind).reduce((a, i) => a + paidInRangeBase(i, from, to, 'USD'), 0);
-  const expTotalPaidARS      = (expWithKind).reduce((a, e) => a + paidInRangeBase(e, from, to, 'ARS'), 0);
-  const expTotalPaidUSD      = (expWithKind).reduce((a, e) => a + paidInRangeBase(e, from, to, 'USD'), 0);
+  // Los totales se calculan MÁS ABAJO, iterando cada fila visible (así lo mostrado en la tabla
+  // coincide exactamente con las cards). Esto va después de construir itemsByMonth.
+  // Placeholders para no romper referencias tempranas:
+  let incTotalARSFinal = 0, incTotalUSDFinal = 0, expTotalARSFinal = 0, expTotalUSDFinal = 0;
+  let incTotalConfirmed = 0, expTotalPaid = 0;
+  let incTotalPending = 0, expTotalPending = 0;
+  let balanceARS = 0, balanceUSD = 0, balance = 0, margin = 0;
 
-  // OJO: incWithKind/expWithKind incluye solo items con período dentro del rango. Falta sumar
-  // los pagos hechos en el rango cuyo item es de OTRO período (ej: cobrás en julio una factura de mayo).
-  // Para no contar dos veces, marcamos los items ya contemplados:
-  const seenIncIds = new Set(incWithKind.map(i => i.auto ? `autoinc:${i.projectId}:${i.month}` : `inc:${i.id}`));
-  const seenExpIds = new Set(expWithKind.map(e => e.auto ? `autoexp:${e.sourceExpenseId}:${e.month}` : `exp:${e.id}`));
-
-  function addForeignPaymentsToTotal(targetCur, kind) {
-    let extra = 0;
-    if (kind === 'income') {
-      (state.incomePayments || []).forEach(p => {
-        const inc = state.incomes.find(x => x.id === p.incomeId);
-        if (!inc) return;
-        if (seenIncIds.has(`inc:${inc.id}`)) return;
-        const d = (p.date || p.paidAt || '').slice(0,10);
-        if (!d || !inRange(d, from, to)) return;
-        const cur = p.currency || inc.currency || 'ARS';
-        const rate = Number(p.exchangeRate) || Number(inc.exchangeRateAtTime) || Number(state.exchangeRate) || 1200;
-        extra += convertAt(Number(p.amount)||0, cur, targetCur, rate);
-      });
-      (state.recurringChargeLog || []).forEach(r => {
-        if (seenIncIds.has(`autoinc:${r.projectId}:${r.month}`)) return;
-        const d = (r.date || r.chargedAt || '').slice(0,10);
-        if (!d || !inRange(d, from, to)) return;
-        const proj = getProject(r.projectId);
-        if (!proj) return;
-        const amount = r.amount != null ? Number(r.amount) : Number(proj.monthlyFee || 0);
-        const cur = r.currency || proj.monthlyFeeCurrency || 'ARS';
-        const rate = Number(r.exchangeRate) || Number(state.exchangeRate) || 1200;
-        extra += convertAt(amount, cur, targetCur, rate);
-      });
-      // Sintético: incomes confirmados sin payment log
-      state.incomes.forEach(i => {
-        if (seenIncIds.has(`inc:${i.id}`)) return;
-        if ((state.incomePayments || []).some(p => p.incomeId === i.id)) return;
-        if ((i.status || 'CONFIRMED') !== 'CONFIRMED') return;
-        const d = ((i.confirmedAt && i.confirmedAt.slice(0,10)) || i.date || '').slice(0,10);
-        if (!d || !inRange(d, from, to)) return;
-        const cur = i.currency || 'ARS';
-        const rate = Number(i.exchangeRateAtTime) || Number(state.exchangeRate) || 1200;
-        extra += convertAt(Number(i.amount)||0, cur, targetCur, rate);
-      });
-    } else {
-      (state.expensePayments || []).forEach(p => {
-        const exp = state.expenses.find(x => x.id === p.expenseId);
-        if (!exp) return;
-        if (seenExpIds.has(`exp:${exp.id}`)) return;
-        const d = (p.date || p.paidAt || '').slice(0,10);
-        if (!d || !inRange(d, from, to)) return;
-        const cur = p.currency || exp.currency || 'ARS';
-        const rate = Number(p.exchangeRate) || Number(exp.exchangeRateAtTime) || Number(state.exchangeRate) || 1200;
-        extra += convertAt(Number(p.amount)||0, cur, targetCur, rate);
-      });
-      (state.recurringExpensePayments || []).forEach(r => {
-        if (seenExpIds.has(`autoexp:${r.expenseId}:${r.month}`)) return;
-        const d = (r.date || r.paidAt || '').slice(0,10);
-        if (!d || !inRange(d, from, to)) return;
-        const exp = state.expenses.find(e => e.id === r.expenseId);
-        if (!exp) return;
-        const amount = r.amount != null ? Number(r.amount) : Number(exp.amount || 0);
-        const cur = r.currency || exp.currency || 'ARS';
-        const rate = Number(r.exchangeRate) || Number(state.exchangeRate) || 1200;
-        extra += convertAt(amount, cur, targetCur, rate);
-      });
-      state.expenses.forEach(e => {
-        if (seenExpIds.has(`exp:${e.id}`)) return;
-        if ((state.expensePayments || []).some(p => p.expenseId === e.id)) return;
-        if ((e.status || 'PAID') !== 'PAID') return;
-        const d = ((e.paidAt && e.paidAt.slice(0,10)) || e.date || '').slice(0,10);
-        if (!d || !inRange(d, from, to)) return;
-        const cur = e.currency || 'ARS';
-        const rate = Number(e.exchangeRateAtTime) || Number(state.exchangeRate) || 1200;
-        extra += convertAt(Number(e.amount)||0, cur, targetCur, rate);
-      });
-    }
-    return extra;
-  }
-
-  const incForeignARS = addForeignPaymentsToTotal('ARS', 'income');
-  const incForeignUSD = addForeignPaymentsToTotal('USD', 'income');
-  const expForeignARS = addForeignPaymentsToTotal('ARS', 'expense');
-  const expForeignUSD = addForeignPaymentsToTotal('USD', 'expense');
-
-  const incTotalARSFinal = incTotalConfirmedARS + incForeignARS;
-  const incTotalUSDFinal = incTotalConfirmedUSD + incForeignUSD;
-  const expTotalARSFinal = expTotalPaidARS + expForeignARS;
-  const expTotalUSDFinal = expTotalPaidUSD + expForeignUSD;
-
-  // Para retrocompatibilidad con el resto del código que usa baseCur:
-  const incTotalConfirmed = baseCur === 'USD' ? incTotalUSDFinal : incTotalARSFinal;
-  const expTotalPaid      = baseCur === 'USD' ? expTotalUSDFinal : expTotalARSFinal;
-
-  // Pendiente: lo que falta cobrar/pagar (solo se muestra en vista Mes)
-  // Solo items en su período original (sin carry-overs ni foreign-payments)
-  const incTotalPending = incWithKind.reduce((a, b) => a + pendingPart(b), 0);
-  const expTotalPending = expWithKind.reduce((a, b) => a + pendingPart(b), 0);
-  const balanceARS = incTotalARSFinal - expTotalARSFinal;
-  const balanceUSD = incTotalUSDFinal - expTotalUSDFinal;
-  const balance = baseCur === 'USD' ? balanceUSD : balanceARS;
-  const margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
+  // Detalle de contribuciones (para panel de auditoría clickeable)
+  const rowContribInc = []; // { it, monthKey, arsAmt, usdAmt, kind, label }
+  const rowContribExp = [];
 
   // Cash-flow real (panel auditoría)
   const allIncomeCashFlow = getAllCashFlowPayments('income');
@@ -5142,11 +5122,11 @@ function renderFinance() {
   const itemsByMonth = {};
   const rowSeen = new Set(); // `${monthKey}|${itemKey}`
   function addRow(m, item) {
-    const itemKey = item._carryOver
-      ? `co:${item.id || item.projectId || item.sourceExpenseId}:${item.month || ''}`
-      : item.auto
-        ? `${item._kind}-auto:${item.projectId || item.sourceExpenseId}:${item.month}`
-        : `${item._kind}:${item.id}`;
+    // Key unificado para prevenir DOBLE FILA por mismo item en mismo mes
+    // (evita: carry-over + foreign-payment del mismo item → se sumaría 2 veces)
+    const itemKey = item.auto
+      ? `${item._kind}-auto:${item.projectId || item.sourceExpenseId}:${item.month}`
+      : `${item._kind}:${item.id}`;
     const k = `${m}|${itemKey}`;
     if (rowSeen.has(k)) return;
     rowSeen.add(k);
@@ -5219,6 +5199,56 @@ function renderFinance() {
     );
   });
   const sortedMonths = Object.keys(itemsByMonth).sort();
+
+  // ===== TOTALES ROW-BASED =====
+  // Iteramos cada fila visible y sumamos SOLO lo cobrado/pagado este mes.
+  // Así el total = suma de lo que se ve en la columna INGRESO/EGRESO.
+  sortedMonths.forEach(m => {
+    itemsByMonth[m].forEach(it => {
+      const isInc = it._kind === 'income';
+      // Cash contribution del row = pagos hechos en este mes por este item.
+      // Los carry-overs pueden tener un pago del mes actual (parcial) → cuenta.
+      // Sin pago en el mes → 0 (solo pendiente, no cobrado).
+      const arsAmt = paidInMonthBase(it, m, 'ARS');
+      const usdAmt = paidInMonthBase(it, m, 'USD');
+      if (arsAmt > 0.001 || usdAmt > 0.001) {
+        const entry = { it, monthKey: m, arsAmt, usdAmt };
+        if (isInc) { rowContribInc.push(entry); incTotalARSFinal += arsAmt; incTotalUSDFinal += usdAmt; }
+        else       { rowContribExp.push(entry); expTotalARSFinal += arsAmt; expTotalUSDFinal += usdAmt; }
+      }
+    });
+  });
+
+  // Pendiente: items del período con saldo sin pagar (SOLO en vista mes)
+  // Sumado en baseCur al tipo de cambio ACTUAL (porque aún no se cobró)
+  const _rateNow = Number(state.exchangeRate) || 1200;
+  const _pendingInBase = (item) => {
+    const s = getPaymentSummary(item);
+    if (item._carryOver) {
+      const remaining = Number(item._carryOverRemaining) || 0;
+      return convertAt(remaining, item.currency || 'ARS', baseCur, _rateNow);
+    }
+    return convertAt(s.remaining, item.currency || 'ARS', baseCur, _rateNow);
+  };
+  incTotalPending = (incWithKind || []).reduce((a, i) => a + _pendingInBase(i), 0);
+  expTotalPending = (expWithKind || []).reduce((a, e) => a + _pendingInBase(e), 0);
+
+  incTotalConfirmed = baseCur === 'USD' ? incTotalUSDFinal : incTotalARSFinal;
+  expTotalPaid      = baseCur === 'USD' ? expTotalUSDFinal : expTotalARSFinal;
+  balanceARS = incTotalARSFinal - expTotalARSFinal;
+  balanceUSD = incTotalUSDFinal - expTotalUSDFinal;
+  balance = baseCur === 'USD' ? balanceUSD : balanceARS;
+  margin = incTotalConfirmed > 0 ? Math.round(balance / incTotalConfirmed * 100) : 0;
+
+  // Exponer para openFinanceBreakdown
+  window._financeAudit = {
+    income: rowContribInc,
+    expense: rowContribExp,
+    baseCur,
+    label,
+    totalIncARS: incTotalARSFinal, totalIncUSD: incTotalUSDFinal,
+    totalExpARS: expTotalARSFinal, totalExpUSD: expTotalUSDFinal,
+  };
 
   // Year selector options
   const allYears = (() => {
@@ -5294,13 +5324,13 @@ function renderFinance() {
 
     <div class="px-4 md:px-10 pb-10 space-y-4 md:space-y-6">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
-        <div class="card p-4 md:p-5">
-          <div class="text-xs text-gray-500">${showPending ? 'Cobrado' : 'Ingresos'}</div>
+        <div class="card p-4 md:p-5 cursor-pointer hover:ring-2 hover:ring-green-200 transition" onclick="openFinanceBreakdown('income')" title="Click para ver el detalle de cada suma">
+          <div class="text-xs text-gray-500 flex items-center gap-1">${showPending ? 'Cobrado' : 'Ingresos'} <span class="text-gray-300">ⓘ</span></div>
           <div class="text-xl md:text-2xl font-semibold text-green-700">${fmtAmount(baseCur==='USD'?incTotalUSDFinal:incTotalARSFinal, baseCur)}</div>
           ${showPending && incTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(incTotalPending, baseCur)} esperado este mes</div>` : ''}
         </div>
-        <div class="card p-4 md:p-5">
-          <div class="text-xs text-gray-500">${showPending ? 'Pagado' : 'Gastos'}</div>
+        <div class="card p-4 md:p-5 cursor-pointer hover:ring-2 hover:ring-red-200 transition" onclick="openFinanceBreakdown('expense')" title="Click para ver el detalle de cada suma">
+          <div class="text-xs text-gray-500 flex items-center gap-1">${showPending ? 'Pagado' : 'Gastos'} <span class="text-gray-300">ⓘ</span></div>
           <div class="text-xl md:text-2xl font-semibold text-red-600">${fmtAmount(baseCur==='USD'?expTotalUSDFinal:expTotalARSFinal, baseCur)}</div>
           ${showPending && expTotalPending > 0 ? `<div class="text-[11px] text-amber-700 mt-1">+ ${fmtAmount(expTotalPending, baseCur)} esperado este mes</div>` : ''}
         </div>
