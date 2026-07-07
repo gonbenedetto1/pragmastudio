@@ -6,6 +6,7 @@ const { verifyAuth, getAfipClient } = require('../../lib/afip-helpers');
 //   concept?: 1|2|3,                 // 1=productos, 2=servicios (default), 3=ambos
 //   clientDocType?: 80|86|96|99,     // 80=CUIT, 86=CUIL, 96=DNI, 99=Consumidor Final
 //   clientDocNumber?: number|string, // sin guiones
+//   condicionIVAReceptorId?: number, // AFIP: 5=Cons.Final, 1=Resp.Insc, 6=Monotributo, 4=Exento (default 5)
 //   serviceFromDate?: 'YYYY-MM-DD',  // requerido si concept != 1
 //   serviceToDate?:   'YYYY-MM-DD',
 //   dueDate?:         'YYYY-MM-DD',
@@ -23,6 +24,7 @@ module.exports = async function handler(req, res) {
     concept = 2,
     clientDocType = 99,
     clientDocNumber = 0,
+    condicionIVAReceptorId = 5,
     serviceFromDate,
     serviceToDate,
     dueDate,
@@ -59,6 +61,8 @@ module.exports = async function handler(req, res) {
       Concepto: Number(concept) || 2,
       DocTipo: Number(clientDocType) || 99,
       DocNro: Number(clientDocNumber) || 0,
+      // Condición frente al IVA del receptor (obligatorio desde RG 5616).
+      CondicionIVAReceptorId: Number(condicionIVAReceptorId) || 5,
       CbteDesde: newNumber,
       CbteHasta: newNumber,
       CbteFch: todayStr,
@@ -96,6 +100,7 @@ module.exports = async function handler(req, res) {
       issuedBy: auth.user.email || null,
       docType: data.DocTipo,
       docNumber: data.DocNro,
+      condicionIVAReceptorId: data.CondicionIVAReceptorId,
     });
   } catch (err) {
     console.error('AFIP error:', err);
