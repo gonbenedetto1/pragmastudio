@@ -234,7 +234,26 @@ const DEFAULT_STATE = {
   exchangeRateUpdatedAt: null,
   budgets: [],                    // Presupuestos: { id, code, clientName, category, pricingModel, currency, status, items, riskFactors, contingencyPct, ... }
   invoices: [],                   // Facturas AFIP: { id, incomeId, projectId, cae, number, ptoVta, cbteTipo, typeName, date, amount, currency, clientName, clientDocType, clientDocNumber, issuedAt, issuedBy }
+  contentIdeas: [],               // { id, title, description, platform, format, status, assigneeId, projectId, publishedUrl, publishedAt, scheduledFor, createdAt, createdBy, notes, tags, hook, cta }
 };
+
+const CONTENT_STATUS = {
+  IDEA:        { label: 'Idea',          color: 'bg-gray-100 text-gray-700',    emoji: '💡' },
+  IN_PROGRESS: { label: 'En producción', color: 'bg-blue-100 text-blue-700',    emoji: '🎬' },
+  READY:       { label: 'Listo',         color: 'bg-amber-100 text-amber-800',  emoji: '✓' },
+  PUBLISHED:   { label: 'Publicado',     color: 'bg-green-100 text-green-700',  emoji: '🚀' },
+};
+
+const CONTENT_PLATFORMS = {
+  instagram: { label: 'Instagram', color: '#E4405F', emoji: '📸' },
+  tiktok:    { label: 'TikTok',    color: '#000000', emoji: '🎵' },
+  youtube:   { label: 'YouTube',   color: '#FF0000', emoji: '▶' },
+  linkedin:  { label: 'LinkedIn',  color: '#0A66C2', emoji: '💼' },
+  twitter:   { label: 'X/Twitter', color: '#000000', emoji: '𝕏' },
+  web:       { label: 'Web/Blog',  color: '#6366F1', emoji: '🌐' },
+};
+
+const CONTENT_FORMATS = ['Reel', 'Short', 'Carrusel', 'Story', 'Video largo', 'Post foto', 'Live', 'Podcast'];
 
 const INCOME_STATUS = {
   PENDING:   { label: 'Pendiente',  color: 'bg-amber-100 text-amber-800' },
@@ -1004,6 +1023,7 @@ const NAV = [
   { key: 'projects',  label: 'Proyectos',   icon: '◫' },
   { key: 'budgets',   label: 'Presupuestos',icon: '$' },
   { key: 'finance',   label: 'Finanzas',    icon: '◷' },
+  { key: 'content',   label: 'Contenido',   icon: '▶' },
   { key: 'reports',   label: 'Reportes',    icon: '◈' },
   { key: 'documents', label: 'Documentos', icon: '▤' },
   { key: 'resources', label: 'Recursos',   icon: '◇' },
@@ -1058,6 +1078,7 @@ function render() {
     projects: renderProjects,
     budgets: renderBudgets,
     finance: renderFinance,
+    content: renderContent,
     reports: renderReports,
     documents: renderDocuments,
     resources: renderResources,
@@ -5016,6 +5037,344 @@ function openRangePickerInline() {
     if (!financeFrom) financeFrom = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0,10);
     if (!financeTo) financeTo = todayISO();
   }
+  render();
+}
+
+// ============================================================
+// CONTENIDO — Ideas de videos / posts para redes
+// ============================================================
+
+let contentFilter = { platform: '', status: '', assignee: '', q: '' };
+let contentDragId = null;
+
+function renderContent() {
+  state.contentIdeas = state.contentIdeas || [];
+  const ideas = state.contentIdeas.slice();
+
+  // Filtros
+  const filtered = ideas.filter(c => {
+    if (contentFilter.platform && c.platform !== contentFilter.platform) return false;
+    if (contentFilter.assignee && c.assigneeId !== contentFilter.assignee) return false;
+    if (contentFilter.q) {
+      const q = contentFilter.q.toLowerCase();
+      const hay = `${c.title||''} ${c.description||''} ${c.notes||''} ${c.hook||''} ${(c.tags||[]).join(' ')}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  // Group by status
+  const byStatus = { IDEA: [], IN_PROGRESS: [], READY: [], PUBLISHED: [] };
+  filtered.forEach(c => { byStatus[c.status || 'IDEA'] = byStatus[c.status || 'IDEA'] || []; byStatus[c.status || 'IDEA'].push(c); });
+
+  // Sort: por updatedAt desc dentro de cada columna
+  Object.keys(byStatus).forEach(k => {
+    byStatus[k].sort((a,b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''));
+  });
+
+  // Stats para contadores
+  const total = ideas.length;
+  const publishedCount = ideas.filter(c => c.status === 'PUBLISHED').length;
+  const thisMonth = ideas.filter(c => {
+    if (c.status !== 'PUBLISHED' || !c.publishedAt) return false;
+    return c.publishedAt.slice(0,7) === todayISO().slice(0,7);
+  }).length;
+
+  return `
+    ${viewHeader('Contenido', `${total} ideas · ${publishedCount} publicadas · ${thisMonth} este mes`,
+      `<button class="btn-primary" onclick="openContentModal()">+ Nueva idea</button>`)}
+
+    <div class="px-4 md:px-10 pb-10 space-y-4">
+
+      <!-- Filtros -->
+      <div class="card p-3 flex flex-wrap items-center gap-2">
+        <input type="search" placeholder="Buscar..." class="input max-w-xs" value="${escapeAttr(contentFilter.q)}" oninput="contentFilter.q=this.value; render()" />
+
+        <select class="input max-w-[160px]" onchange="contentFilter.platform=this.value; render()">
+          <option value="">Todas las plataformas</option>
+          ${Object.entries(CONTENT_PLATFORMS).map(([k,v]) => `<option value="${k}" ${contentFilter.platform===k?'selected':''}>${v.emoji} ${v.label}</option>`).join('')}
+        </select>
+
+        <select class="input max-w-[160px]" onchange="contentFilter.assignee=this.value; render()">
+          <option value="">Todo el equipo</option>
+          ${state.members.map(m => `<option value="${m.id}" ${contentFilter.assignee===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+        </select>
+
+        ${(contentFilter.q || contentFilter.platform || contentFilter.assignee) ? `
+          <button onclick="contentFilter={platform:'',status:'',assignee:'',q:''}; render()" class="text-xs text-gray-500 hover:text-gray-900 ml-auto">Limpiar filtros ✕</button>
+        ` : ''}
+      </div>
+
+      <!-- Kanban -->
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 md:gap-4">
+        ${Object.entries(CONTENT_STATUS).map(([statusKey, meta]) => {
+          const items = byStatus[statusKey] || [];
+          return `
+            <div class="card p-3 drop-zone" data-status="${statusKey}"
+              ondragover="event.preventDefault(); this.classList.add('drag-over')"
+              ondragleave="this.classList.remove('drag-over')"
+              ondrop="event.preventDefault(); this.classList.remove('drag-over'); moveContentStatus(contentDragId, '${statusKey}')">
+              <div class="flex items-center justify-between mb-3 px-1">
+                <div class="flex items-center gap-2">
+                  <span>${meta.emoji}</span>
+                  <span class="text-xs uppercase tracking-wider font-semibold text-gray-600">${meta.label}</span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 font-semibold">${items.length}</span>
+                </div>
+                ${statusKey === 'IDEA' ? `<button onclick="openContentModal()" class="text-gray-400 hover:text-gray-900 text-sm" title="Nueva idea">+</button>` : ''}
+              </div>
+              <div class="space-y-2 min-h-[80px]">
+                ${items.length === 0
+                  ? `<div class="text-[11px] text-gray-400 italic text-center py-6">Vacío</div>`
+                  : items.map(c => contentCard(c)).join('')
+                }
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function contentCard(c) {
+  const platform = CONTENT_PLATFORMS[c.platform];
+  const assignee = c.assigneeId ? state.members.find(m => m.id === c.assigneeId) : null;
+  const proj = c.projectId ? getProject(c.projectId) : null;
+  const isScheduled = c.scheduledFor && !c.publishedAt;
+  const isPublished = c.status === 'PUBLISHED';
+
+  return `
+    <div class="draggable bg-white border border-gray-200 rounded-lg p-3 hover:border-gray-400 hover:shadow-sm transition cursor-pointer group"
+      draggable="true"
+      ondragstart="contentDragId='${c.id}'; this.classList.add('dragging')"
+      ondragend="this.classList.remove('dragging'); contentDragId=null"
+      onclick="openContentModal('${c.id}')">
+      <div class="flex items-start justify-between gap-2 mb-1.5">
+        <div class="text-sm font-semibold leading-snug flex-1 min-w-0">${escapeHtml(c.title || '(sin título)')}</div>
+        <button onclick="event.stopPropagation(); deleteContentIdea('${c.id}')" class="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 text-xs transition shrink-0">✕</button>
+      </div>
+
+      ${c.hook ? `<div class="text-[11px] text-gray-500 italic line-clamp-2 mb-1.5">"${escapeHtml(c.hook)}"</div>` : ''}
+      ${!c.hook && c.description ? `<div class="text-[11px] text-gray-500 line-clamp-2 mb-1.5">${escapeHtml(c.description)}</div>` : ''}
+
+      <div class="flex flex-wrap items-center gap-1 mt-2">
+        ${platform ? `<span class="text-[10px] chip" style="background:${platform.color}15; color:${platform.color}">${platform.emoji} ${platform.label}</span>` : ''}
+        ${c.format ? `<span class="text-[10px] chip bg-gray-100 text-gray-600">${escapeHtml(c.format)}</span>` : ''}
+        ${proj ? `<span class="text-[10px] chip bg-gray-100 text-gray-600" title="Proyecto">${escapeHtml(proj.name)}</span>` : ''}
+      </div>
+
+      ${(assignee || isScheduled || isPublished || (c.tags && c.tags.length)) ? `
+        <div class="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-gray-100">
+          <div class="flex items-center gap-1.5 min-w-0">
+            ${assignee ? `<span class="w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-semibold shrink-0" style="background:${assignee.color}" title="${escapeHtml(assignee.name)}">${assignee.name[0]}</span>` : ''}
+            ${(c.tags || []).slice(0,2).map(t => `<span class="text-[9px] text-gray-400">#${escapeHtml(t)}</span>`).join('')}
+          </div>
+          <div class="text-[10px] text-gray-400 shrink-0">
+            ${isPublished && c.publishedAt ? `✓ ${fmt(c.publishedAt)}` : isScheduled ? `📅 ${fmt(c.scheduledFor)}` : ''}
+          </div>
+        </div>
+      ` : ''}
+
+      ${c.publishedUrl ? `
+        <a href="${escapeAttr(c.publishedUrl)}" target="_blank" onclick="event.stopPropagation()" class="block text-[10px] text-blue-600 hover:underline mt-1.5 truncate">↗ ${escapeHtml(c.publishedUrl)}</a>
+      ` : ''}
+    </div>
+  `;
+}
+
+let _currentContentId = null;
+function openContentModal(id) {
+  _currentContentId = id || null;
+  const c = id ? (state.contentIdeas || []).find(x => x.id === id) : {
+    id: '',
+    title: '',
+    description: '',
+    hook: '',
+    cta: '',
+    platform: 'instagram',
+    format: 'Reel',
+    status: 'IDEA',
+    assigneeId: currentMemberId,
+    projectId: '',
+    publishedUrl: '',
+    publishedAt: '',
+    scheduledFor: '',
+    notes: '',
+    tags: [],
+  };
+  if (!c) return;
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-xl font-semibold">${id ? 'Editar idea' : 'Nueva idea de contenido'}</h2>
+          <p class="text-sm text-gray-500 mt-0.5">${id ? 'Actualizá los datos' : 'Agregá una nueva idea al pipeline'}</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      <form onsubmit="submitContentIdea(event)" class="space-y-3">
+        <div>
+          <label class="text-xs text-gray-500">Título <span class="text-red-500">*</span></label>
+          <input name="title" required class="input" value="${escapeAttr(c.title)}" placeholder="Ej: Cómo hicimos la factura C en 5 min" />
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Hook (frase de apertura — primeros 3 segundos)</label>
+          <input name="hook" class="input" value="${escapeAttr(c.hook)}" placeholder="Ej: '¿Sabías que podés facturar desde el celular?'" />
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Descripción / guión</label>
+          <textarea name="description" rows="3" class="input" placeholder="Qué va a decir el video, estructura, ideas de escenas...">${escapeHtml(c.description)}</textarea>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Plataforma</label>
+            <select name="platform" class="input">
+              ${Object.entries(CONTENT_PLATFORMS).map(([k,v]) => `<option value="${k}" ${c.platform===k?'selected':''}>${v.emoji} ${v.label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Formato</label>
+            <select name="format" class="input">
+              ${CONTENT_FORMATS.map(f => `<option value="${f}" ${c.format===f?'selected':''}>${f}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Estado</label>
+            <select name="status" class="input">
+              ${Object.entries(CONTENT_STATUS).map(([k,v]) => `<option value="${k}" ${c.status===k?'selected':''}>${v.emoji} ${v.label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Responsable</label>
+            <select name="assigneeId" class="input">
+              <option value="">— Sin asignar —</option>
+              ${state.members.map(m => `<option value="${m.id}" ${c.assigneeId===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Proyecto relacionado (opcional)</label>
+            <select name="projectId" class="input">
+              <option value="">— Ninguno —</option>
+              ${state.projects.map(p => `<option value="${p.id}" ${c.projectId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Programado para (opcional)</label>
+            <input type="date" name="scheduledFor" class="input" value="${escapeAttr(c.scheduledFor || '')}" />
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Call to action (CTA)</label>
+          <input name="cta" class="input" value="${escapeAttr(c.cta)}" placeholder="Ej: 'Dale like y comentá si querés el link'" />
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Tags (separados por coma)</label>
+          <input name="tags" class="input" value="${escapeAttr((c.tags || []).join(', '))}" placeholder="afip, facturacion, tutorial" />
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Notas internas</label>
+          <textarea name="notes" rows="2" class="input" placeholder="Material a conseguir, referencias, feedback del equipo...">${escapeHtml(c.notes)}</textarea>
+        </div>
+
+        <!-- Campos que aparecen al estar publicado -->
+        <div class="pt-3 border-t border-gray-100 space-y-3" id="publishedFields">
+          <div class="text-xs uppercase tracking-wider text-gray-500 font-semibold">Al publicar</div>
+          <div class="grid grid-cols-[1fr_auto] gap-2">
+            <div>
+              <label class="text-xs text-gray-500">Link publicado</label>
+              <input type="url" name="publishedUrl" class="input" value="${escapeAttr(c.publishedUrl)}" placeholder="https://instagram.com/..." />
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Fecha</label>
+              <input type="date" name="publishedAt" class="input" value="${escapeAttr(c.publishedAt || '')}" />
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-between items-center pt-3 border-t border-gray-100">
+          ${id ? `<button type="button" onclick="deleteContentIdea('${c.id}'); closeModal()" class="text-xs text-red-500 hover:text-red-700">Eliminar</button>` : '<span></span>'}
+          <div class="flex gap-2">
+            <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn-primary">${id ? 'Guardar' : 'Crear idea'}</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function submitContentIdea(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const tags = (data.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+  const now = new Date().toISOString();
+  state.contentIdeas = state.contentIdeas || [];
+
+  // Auto-rellenar publishedAt si pasa a PUBLISHED y no tiene fecha
+  if (data.status === 'PUBLISHED' && !data.publishedAt) data.publishedAt = todayISO();
+
+  if (_currentContentId) {
+    const idx = state.contentIdeas.findIndex(c => c.id === _currentContentId);
+    if (idx >= 0) {
+      state.contentIdeas[idx] = {
+        ...state.contentIdeas[idx],
+        ...data,
+        tags,
+        updatedAt: now,
+      };
+    }
+  } else {
+    state.contentIdeas.push({
+      id: uid(),
+      ...data,
+      tags,
+      createdBy: currentMemberId,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  save();
+  closeModal();
+  render();
+  showToast(_currentContentId ? 'Idea actualizada' : 'Idea creada', 'success');
+  _currentContentId = null;
+}
+
+function deleteContentIdea(id) {
+  const c = (state.contentIdeas || []).find(x => x.id === id);
+  if (!c) return;
+  if (!confirm(`¿Eliminar "${c.title || 'esta idea'}"?`)) return;
+  state.contentIdeas = state.contentIdeas.filter(x => x.id !== id);
+  save();
+  render();
+  showToast('Idea eliminada', 'info');
+}
+
+function moveContentStatus(id, newStatus) {
+  if (!id) return;
+  const c = (state.contentIdeas || []).find(x => x.id === id);
+  if (!c) return;
+  if (c.status === newStatus) return;
+  c.status = newStatus;
+  c.updatedAt = new Date().toISOString();
+  if (newStatus === 'PUBLISHED' && !c.publishedAt) {
+    c.publishedAt = todayISO();
+  }
+  save();
   render();
 }
 
