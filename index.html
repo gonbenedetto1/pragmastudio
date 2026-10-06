@@ -1653,8 +1653,12 @@ function openProjectDetail(id) {
   const isClosed = p.status === 'DONE' || p.status === 'ARCHIVED';
   const tasks = state.tasks.filter(t => t.projectId === id);
   const completedTasks = tasks.filter(t => t.status === 'COMPLETED');
-  const incomes = state.incomes.filter(i => i.projectId === id).reduce((a,b) => a + Number(b.amount||0), 0);
-  const expenses = state.expenses.filter(e => e.projectId === id).reduce((a,b) => a + Number(b.amount||0), 0);
+  // Convertimos a la moneda base ANTES de sumar — evita mezclar ARS con USD
+  const baseCur = state.defaultCurrency || 'ARS';
+  const _rateNow = Number(state.exchangeRate) || 1200;
+  const _toBase = (amt, cur) => convertAt(Number(amt)||0, cur || 'ARS', baseCur, _rateNow);
+  const incomes = state.incomes.filter(i => i.projectId === id).reduce((a,b) => a + _toBase(b.amount, b.currency), 0);
+  const expenses = state.expenses.filter(e => e.projectId === id).reduce((a,b) => a + _toBase(b.amount, b.currency), 0);
 
   const totalHrs = completedTasks.reduce((a,t) => a + (Number(t.actualHrs)||0), 0);
 
@@ -3292,11 +3296,53 @@ function toggleMonthCharged(projectId, month) {
   save(); render();
 }
 
+// ===== Helpers de monto efectivo por mes (mensualidades y gastos fijos) =====
+// Modelo tipo Google Calendar:
+//  1. Si el mes ya tiene pago registrado → el monto del pago (congelado)
+//  2. Si hay override puntual para el mes → ese valor
+//  3. Si hay entradas de history → la última con `from <= month`
+//  4. Fallback: el monto master del proyecto/gasto
+function getEffectiveMonthlyFee(project, month) {
+  if (!project) return 0;
+  // (1) Pago ya registrado para ese mes
+  const chargeRec = (state.recurringChargeLog || []).find(r => r.projectId === project.id && r.month === month);
+  if (chargeRec && chargeRec.amount != null) return Number(chargeRec.amount);
+  // (2) Override puntual
+  const overrides = project.monthlyFeeOverrides || {};
+  if (overrides[month] != null) return Number(overrides[month]);
+  // (3) History: entrada más reciente con from <= month
+  const history = (project.monthlyFeeHistory || []).slice()
+    .filter(h => h.from && h.from <= month)
+    .sort((a,b) => b.from.localeCompare(a.from));
+  if (history.length > 0) return Number(history[0].amount);
+  // (4) Master
+  return Number(project.monthlyFee) || 0;
+}
+
+function getEffectiveFixedExpenseAmount(expense, month) {
+  if (!expense) return 0;
+  // (1) Pago ya registrado
+  const payRec = (state.recurringExpensePayments || []).find(r => r.expenseId === expense.id && r.month === month);
+  if (payRec && payRec.amount != null) return Number(payRec.amount);
+  // (2) Override puntual
+  const overrides = expense.amountOverrides || {};
+  if (overrides[month] != null) return Number(overrides[month]);
+  // (3) History
+  const history = (expense.amountHistory || []).slice()
+    .filter(h => h.from && h.from <= month)
+    .sort((a,b) => b.from.localeCompare(a.from));
+  if (history.length > 0) return Number(history[0].amount);
+  // (4) Master
+  return Number(expense.amount) || 0;
+}
+
 function getAutoIncomes(month) {
   // Ingresos virtuales a partir de proyectos ACTIVE_RECURRING con mensualidad
   const out = [];
   state.projects.forEach(p => {
-    if (p.status !== 'ACTIVE_RECURRING' || !p.monthlyFee) return;
+    if (p.status !== 'ACTIVE_RECURRING') return;
+    const effAmount = getEffectiveMonthlyFee(p, month);
+    if (!effAmount) return;
     const startMonth = (p.startDate || '').slice(0, 7);
     if (startMonth && startMonth > month) return;
     const endMonth = (p.endDate || '').slice(0, 7);
@@ -3304,7 +3350,7 @@ function getAutoIncomes(month) {
     const charged = isMonthCharged(p.id, month);
     out.push({
       id: `auto-${p.id}-${month}`,
-      amount: Number(p.monthlyFee),
+      amount: effAmount,
       currency: p.monthlyFeeCurrency || state.defaultCurrency || 'ARS',
       date: month + '-01',
       month,
@@ -3342,10 +3388,11 @@ function getAutoExpenses(month) {
     const endMonth = (e.recurringEndDate || '').slice(0, 7);
     if (endMonth && endMonth < month) return;                  // ya fue dado de baja
     const payment = getExpensePaymentRecord(e.id, month);
+    const effAmount = getEffectiveFixedExpenseAmount(e, month);
     out.push({
       id: `auto-exp-${e.id}-${month}`,
       sourceExpenseId: e.id,
-      amount: Number(e.amount),
+      amount: effAmount,
       currency: e.currency || 'ARS',
       date: month + '-01',
       month,
@@ -4727,6 +4774,161 @@ async function checkAfipStatus() {
   }
 }
 
+// ============================================================
+// EDITOR DE MONTO POR MES (mensualidades y gastos fijos)
+// Modelo tipo Google Calendar: Solo este mes · Este + siguientes · Todos
+// ============================================================
+
+let _amtEditorCtx = null; // { kind: 'income'|'expense', refId, month, currency, currentAmount, concept }
+
+function openRecurringAmountEditor(kind, refId, month) {
+  let currency, currentAmount, concept;
+  if (kind === 'income') {
+    const p = getProject(refId);
+    if (!p) return;
+    currency = p.monthlyFeeCurrency || state.defaultCurrency || 'ARS';
+    currentAmount = getEffectiveMonthlyFee(p, month);
+    concept = `Mensualidad · ${p.name}`;
+  } else {
+    const e = state.expenses.find(x => x.id === refId);
+    if (!e) return;
+    currency = e.currency || 'ARS';
+    currentAmount = getEffectiveFixedExpenseAmount(e, month);
+    concept = e.concept;
+  }
+
+  // Chequeo: si ya hay pago registrado para ese mes, avisamos
+  const alreadyPaid = kind === 'income'
+    ? isMonthCharged(refId, month)
+    : isExpenseMonthPaid(refId, month);
+
+  _amtEditorCtx = { kind, refId, month, currency, currentAmount, concept };
+  const [y, m] = month.split('-').map(Number);
+  const monthLabel = `${MONTH_NAMES_FULL[m-1]} ${y}`;
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div class="flex-1 min-w-0">
+          <h2 class="text-lg font-semibold">Editar monto</h2>
+          <p class="text-sm text-gray-500 mt-0.5 truncate">${escapeHtml(concept)} · ${monthLabel}</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      ${alreadyPaid ? `
+        <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-900">
+          <b>⚠ Este mes ya tiene pago registrado.</b> Cambiar el monto va a actualizar también el pago de este mes.
+        </div>
+      ` : ''}
+
+      <form onsubmit="submitRecurringAmountEdit(event)" class="space-y-4">
+        <div>
+          <label class="text-xs text-gray-500">Nuevo monto en <b>${currency}</b></label>
+          <div class="relative">
+            <input type="number" name="amount" step="0.01" required class="input pr-12" value="${Number(currentAmount).toFixed(2)}" />
+            <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 font-semibold pointer-events-none">${currency}</span>
+          </div>
+        </div>
+
+        <div>
+          <div class="text-xs text-gray-500 mb-2">Aplicar cambio a:</div>
+          <div class="space-y-1.5">
+            <label class="flex items-start gap-2 p-2.5 rounded-lg border border-gray-200 hover:bg-gray-50 cursor-pointer">
+              <input type="radio" name="scope" value="only" class="mt-0.5" checked />
+              <div>
+                <div class="text-sm font-medium">Solo este mes</div>
+                <div class="text-[11px] text-gray-500">Afecta únicamente ${monthLabel}. Los demás meses no cambian.</div>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2.5 rounded-lg border border-gray-200 hover:bg-gray-50 cursor-pointer">
+              <input type="radio" name="scope" value="future" class="mt-0.5" />
+              <div>
+                <div class="text-sm font-medium">Este mes y los siguientes</div>
+                <div class="text-[11px] text-gray-500">Desde ${monthLabel} en adelante usa el nuevo monto. Los meses anteriores quedan igual.</div>
+              </div>
+            </label>
+            <label class="flex items-start gap-2 p-2.5 rounded-lg border border-gray-200 hover:bg-gray-50 cursor-pointer">
+              <input type="radio" name="scope" value="all" class="mt-0.5" />
+              <div>
+                <div class="text-sm font-medium">Todos los meses</div>
+                <div class="text-[11px] text-gray-500">Reemplaza el monto base. Los meses ya cobrados/pagados mantienen su valor original.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-3 border-t border-gray-100">
+          <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" class="btn-primary">Guardar</button>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function submitRecurringAmountEdit(e) {
+  e.preventDefault();
+  if (!_amtEditorCtx) return;
+  const { kind, refId, month } = _amtEditorCtx;
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const newAmount = Number(data.amount);
+  const scope = data.scope;
+  if (isNaN(newAmount) || newAmount < 0) { alert('Monto inválido'); return; }
+
+  if (kind === 'income') {
+    const p = state.projects.find(x => x.id === refId);
+    if (!p) return;
+    applyRecurringAmountChange(p, 'monthlyFee', 'monthlyFeeHistory', 'monthlyFeeOverrides', month, newAmount, scope);
+    // Si ya hay pago registrado para este mes, actualizarlo también
+    const chargeRec = (state.recurringChargeLog || []).find(r => r.projectId === refId && r.month === month);
+    if (chargeRec) chargeRec.amount = newAmount;
+  } else {
+    const exp = state.expenses.find(x => x.id === refId);
+    if (!exp) return;
+    applyRecurringAmountChange(exp, 'amount', 'amountHistory', 'amountOverrides', month, newAmount, scope);
+    const payRec = (state.recurringExpensePayments || []).find(r => r.expenseId === refId && r.month === month);
+    if (payRec) payRec.amount = newAmount;
+  }
+
+  save();
+  closeModal();
+  render();
+  showToast('Monto actualizado', 'success');
+  _amtEditorCtx = null;
+}
+
+// Aplica la lógica de scope sobre un objeto (project o expense).
+// masterField: nombre del campo con el monto base (ej 'monthlyFee' o 'amount')
+// historyField, overridesField: nombres de los campos de historial y overrides
+function applyRecurringAmountChange(obj, masterField, historyField, overridesField, month, newAmount, scope) {
+  obj[overridesField] = obj[overridesField] || {};
+  obj[historyField] = obj[historyField] || [];
+
+  if (scope === 'only') {
+    // Override puntual para este mes
+    obj[overridesField][month] = newAmount;
+  } else if (scope === 'future') {
+    // Agregar entrada al history con from = este mes
+    // Primero quitamos overrides de este mes en adelante (quedan subsumidas por la history)
+    const newOverrides = {};
+    Object.keys(obj[overridesField]).forEach(k => {
+      if (k < month) newOverrides[k] = obj[overridesField][k];
+    });
+    obj[overridesField] = newOverrides;
+    // Y agregamos/reemplazamos entrada del history
+    obj[historyField] = obj[historyField].filter(h => h.from !== month);
+    obj[historyField].push({ from: month, amount: newAmount });
+    obj[historyField].sort((a,b) => a.from.localeCompare(b.from));
+  } else if (scope === 'all') {
+    // Reset total: master = nuevo monto, limpiar history + overrides
+    // Los pagos ya registrados mantienen su amount porque está congelado en el payment record.
+    obj[masterField] = newAmount;
+    obj[historyField] = [];
+    obj[overridesField] = {};
+  }
+}
+
 function reactivateRecurringExpense(expenseId) {
   const e = state.expenses.find(x => x.id === expenseId);
   if (!e) return;
@@ -5069,9 +5271,12 @@ function sendPaymentNow(phone) {
 
 function monthBalance(month) {
   const m = month || financeMonth;
-  const inc = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
-  const autoInc = getAutoIncomes(m).reduce((a,b) => a + Number(b.amount||0), 0);
-  const exp = state.expenses.filter(e => e.date && e.date.startsWith(m)).reduce((a,b) => a + Number(b.amount||0), 0);
+  const baseCur = state.defaultCurrency || 'ARS';
+  const _rateNow = Number(state.exchangeRate) || 1200;
+  const _toBase = (amt, cur) => convertAt(Number(amt)||0, cur || 'ARS', baseCur, _rateNow);
+  const inc = state.incomes.filter(i => i.date && i.date.startsWith(m)).reduce((a,b) => a + _toBase(b.amount, b.currency), 0);
+  const autoInc = getAutoIncomes(m).reduce((a,b) => a + _toBase(b.amount, b.currency), 0);
+  const exp = state.expenses.filter(e => e.date && e.date.startsWith(m)).reduce((a,b) => a + _toBase(b.amount, b.currency), 0);
   return inc + autoInc - exp;
 }
 
@@ -6037,9 +6242,13 @@ function renderFinance() {
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
                               </button>
                             ` : ''}
-                            ${it.auto && !isInc ? `
-                              <button onclick="openExpenseModal('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition" title="Editar gasto original (acá podés ponerle &quot;Pagar hasta&quot; para dar de baja a futuro)">✎</button>
+                            ${it.auto && !isInc && !it._carryOver && !it._foreignPayment ? `
+                              <button onclick="openRecurringAmountEditor('expense','${it.sourceExpenseId}','${it._monthKey||it.month}')" class="opacity-0 group-hover:opacity-100 text-blue-600 hover:bg-blue-50 text-xs px-1.5 py-1 rounded transition" title="Editar monto para este mes (solo este / este y siguientes / todos)">$</button>
+                              <button onclick="openExpenseModal('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition" title="Editar gasto maestro (podés ponerle Pagar hasta para dar de baja a futuro)">✎</button>
                               <button onclick="deleteRecurringExpenseFull('${it.sourceExpenseId}')" class="opacity-0 group-hover:opacity-100 text-red-500 text-xs px-1.5 transition" title="Eliminar completamente este gasto fijo (borra historial)">✕</button>
+                            ` : ''}
+                            ${it.auto && isInc && !it._carryOver && !it._foreignPayment ? `
+                              <button onclick="openRecurringAmountEditor('income','${it.projectId}','${it._monthKey||it.month}')" class="opacity-0 group-hover:opacity-100 text-blue-600 hover:bg-blue-50 text-xs px-1.5 py-1 rounded transition" title="Editar monto de la mensualidad para este mes (solo este / este y siguientes / todos)">$</button>
                             ` : ''}
                             ${!it.auto ? `
                               <button onclick="${isInc?'openIncomeModal':'openExpenseModal'}('${it.id}')" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 text-xs px-1.5 transition">✎</button>
