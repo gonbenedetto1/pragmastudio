@@ -236,6 +236,24 @@ const DEFAULT_STATE = {
   invoices: [],                   // Facturas AFIP: { id, incomeId, projectId, cae, number, ptoVta, cbteTipo, typeName, date, amount, currency, clientName, clientDocType, clientDocNumber, condicionIVAReceptorId, issuedAt, issuedBy }
   clients: [],                    // Clientes (datos fiscales): { id, name, docType, docNumber, condicionIVA, notes }
   contentIdeas: [],               // { id, title, description, platform, format, status, assigneeId, projectId, publishedUrl, publishedAt, scheduledFor, createdAt, createdBy, notes, tags, hook, cta }
+  leads: [],                      // { id, negocio, contacto, tel, email, ciudad, provincia, pais, tipo, web, lote, prioridad, website_status, estado, ownerId, ultimoContacto, proximoSeguimiento, recordatorioHora, recordatorioNota, valorEstimado, notas, creadoAt, convertedToProjectId }
+  pipelineStages: [               // Pipeline editable (ids pensados para que no choquen con nada)
+    { id: 'nuevo',        nombre: 'Nuevo',             dot: '#94a3b8', orden: 1 },
+    { id: 'primer',       nombre: 'Primer contacto',   dot: '#38bdf8', orden: 2 },
+    { id: 'conversacion', nombre: 'Conversación',      dot: '#22d3ee', orden: 3 },
+    { id: 'interesado',   nombre: 'Interesado',        dot: '#2dd4bf', orden: 4 },
+    { id: 'reunion',      nombre: 'Reunión agendada',  dot: '#4ade80', orden: 5 },
+    { id: 'propuesta',    nombre: 'Propuesta enviada', dot: '#a78bfa', orden: 6 },
+    { id: 'negociacion',  nombre: 'Negociación',       dot: '#fbbf24', orden: 7 },
+    { id: 'recontactar',  nombre: 'Recontactar',       dot: '#fb923c', orden: 8 },
+    { id: 'ganado',       nombre: 'Ganado',            dot: '#10b981', orden: 9 },
+    { id: 'perdido',      nombre: 'Perdido',           dot: '#fb7185', orden: 10 },
+  ],
+  leadTemplates: [                // Plantillas de WhatsApp: { id, nombre, texto }
+    { id: 'lt-1', nombre: 'Primer contacto', texto: 'Hola {contacto}! 👋\nTe escribo de Pragma Studio.\n\nVi {negocio} en {ciudad} y me gustaría contarte cómo podríamos ayudarte con tu presencia digital.\n\n¿Tenés unos minutos esta semana?\n\n{mi_nombre}' },
+    { id: 'lt-2', nombre: 'Recontactar',     texto: 'Hola {contacto}, {mi_nombre} de Pragma Studio.\n\nTe contacté hace un tiempo por {negocio}. ¿Seguís interesado en charlar?\n\nSaludos!' },
+  ],
+  leadActivity: [],               // { id, actorId, actorNombre, tipo, descripcion, leadId?, createdAt }
 };
 
 const CONTENT_STATUS = {
@@ -1032,6 +1050,7 @@ const NAV = [
   { key: 'clients',   label: 'Clientes',    icon: '⊙' },
   { key: 'budgets',   label: 'Presupuestos',icon: '$' },
   { key: 'finance',   label: 'Finanzas',    icon: '◷' },
+  { key: 'leads',     label: 'Leads',       icon: '◉' },
   { key: 'content',   label: 'Contenido',   icon: '▶' },
   { key: 'reports',   label: 'Reportes',    icon: '◈' },
   { key: 'documents', label: 'Documentos', icon: '▤' },
@@ -1088,6 +1107,7 @@ function render() {
     clients: renderClients,
     budgets: renderBudgets,
     finance: renderFinance,
+    leads: renderLeads,
     content: renderContent,
     reports: renderReports,
     documents: renderDocuments,
@@ -5407,6 +5427,1013 @@ function openRangePickerInline() {
     if (!financeTo) financeTo = todayISO();
   }
   render();
+}
+
+// ============================================================
+// LEADS — CRM interno con pipeline, importador y acciones masivas
+// ============================================================
+
+let leadsView = 'kanban';        // 'kanban' | 'list'
+let leadsFilter = { q: '', lote: '', prioridad: '', conWeb: '', pais: '', ciudad: '', tipo: '', ownerId: '' };
+let leadsSelection = new Set();  // ids seleccionados en list view
+let leadsDragId = null;
+
+const LEAD_PRIORIDADES = {
+  Alta:  { color: 'bg-red-100 text-red-700' },
+  Media: { color: 'bg-amber-100 text-amber-800' },
+  Baja:  { color: 'bg-gray-100 text-gray-600' },
+};
+
+// Protegidas: no se pueden borrar aunque sí renombrar/mover
+const PROTECTED_STAGES = new Set(['ganado', 'perdido']);
+
+function _getStages() {
+  const stages = (state.pipelineStages || []).slice().sort((a,b) => (a.orden||0) - (b.orden||0));
+  return stages;
+}
+function _stageOf(id) {
+  return (state.pipelineStages || []).find(s => s.id === id) || { id, nombre: id || 'Sin etapa', dot: '#9ca3af' };
+}
+
+function _logLeadActivity(tipo, descripcion, leadId) {
+  state.leadActivity = state.leadActivity || [];
+  state.leadActivity.push({
+    id: uid(),
+    actorId: currentMemberId,
+    actorNombre: currentMember()?.name || '',
+    tipo, descripcion, leadId: leadId || null,
+    createdAt: new Date().toISOString(),
+  });
+  // Mantener solo últimas 500 para no inflar el jsonb
+  if (state.leadActivity.length > 500) {
+    state.leadActivity = state.leadActivity.slice(-500);
+  }
+}
+
+function _getFilteredLeads() {
+  const leads = (state.leads || []).slice();
+  const q = (leadsFilter.q || '').toLowerCase().trim();
+  return leads.filter(l => {
+    if (leadsFilter.lote && l.lote !== leadsFilter.lote) return false;
+    if (leadsFilter.prioridad && l.prioridad !== leadsFilter.prioridad) return false;
+    if (leadsFilter.ownerId && l.ownerId !== leadsFilter.ownerId) return false;
+    if (leadsFilter.conWeb === 'si' && !l.web) return false;
+    if (leadsFilter.conWeb === 'no' && l.web) return false;
+    if (leadsFilter.pais && (l.pais || '') !== leadsFilter.pais) return false;
+    if (leadsFilter.ciudad && (l.ciudad || '') !== leadsFilter.ciudad) return false;
+    if (leadsFilter.tipo && (l.tipo || '') !== leadsFilter.tipo) return false;
+    if (q) {
+      const hay = `${l.negocio||''} ${l.contacto||''} ${l.tel||''} ${l.email||''} ${l.ciudad||''} ${l.tipo||''} ${l.notas||''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderLeads() {
+  state.leads = state.leads || [];
+  state.pipelineStages = state.pipelineStages || [];
+  const stages = _getStages();
+  const leads = _getFilteredLeads();
+
+  // Agrupar por etapa (para kanban)
+  const byStage = {};
+  stages.forEach(s => byStage[s.id] = []);
+  leads.forEach(l => {
+    const sId = l.estado || 'nuevo';
+    if (!byStage[sId]) byStage[sId] = [];
+    byStage[sId].push(l);
+  });
+
+  // Stats
+  const total = (state.leads || []).length;
+  const sinAsignar = (state.leads || []).filter(l => !l.ownerId).length;
+  const ganados = (state.leads || []).filter(l => l.estado === 'ganado').length;
+  const activos = (state.leads || []).filter(l => l.estado !== 'ganado' && l.estado !== 'perdido').length;
+
+  // Para filtros: lotes y países únicos
+  const lotes = [...new Set((state.leads || []).map(l => l.lote).filter(Boolean))].sort();
+  const paises = [...new Set((state.leads || []).map(l => l.pais).filter(Boolean))].sort();
+  const ciudades = [...new Set((state.leads || []).map(l => l.ciudad).filter(Boolean))].sort();
+  const tipos = [...new Set((state.leads || []).map(l => l.tipo).filter(Boolean))].sort();
+
+  const selCount = leadsSelection.size;
+
+  return `
+    ${viewHeader('Leads', `${total} totales · ${activos} activos · ${sinAsignar} sin asignar · ${ganados} ganados`,
+      `
+        <div class="flex items-center gap-0.5 bg-gray-100 rounded-lg p-1">
+          <button onclick="leadsView='kanban'; render()" class="px-2.5 py-1 rounded-md text-xs font-semibold transition ${leadsView==='kanban'?'bg-white shadow-sm text-gray-900':'text-gray-500 hover:text-gray-700'}">Kanban</button>
+          <button onclick="leadsView='list'; render()" class="px-2.5 py-1 rounded-md text-xs font-semibold transition ${leadsView==='list'?'bg-white shadow-sm text-gray-900':'text-gray-500 hover:text-gray-700'}">Lista</button>
+        </div>
+        <button class="btn-ghost text-xs" onclick="openLeadsImporter()">⬆ Importar</button>
+        <button class="btn-ghost text-xs" onclick="openLeadsPipelineEditor()">⚙ Pipeline</button>
+        <button class="btn-ghost text-xs" onclick="openLeadsTemplatesEditor()">💬 Templates</button>
+        <button class="btn-primary" onclick="openLeadModal()">+ Nuevo lead</button>
+      `
+    )}
+
+    <div class="px-4 md:px-10 pb-10 space-y-4">
+
+      <!-- Filtros -->
+      <div class="card p-3 flex flex-wrap items-center gap-2">
+        <input type="search" placeholder="Buscar..." class="input max-w-xs" value="${escapeAttr(leadsFilter.q)}" oninput="leadsFilter.q=this.value; render()" />
+        <select class="input max-w-[140px]" onchange="leadsFilter.lote=this.value; render()">
+          <option value="">Todas las bases</option>
+          ${lotes.map(l => `<option value="${escapeAttr(l)}" ${leadsFilter.lote===l?'selected':''}>${escapeHtml(l)}</option>`).join('')}
+        </select>
+        <select class="input max-w-[120px]" onchange="leadsFilter.prioridad=this.value; render()">
+          <option value="">Prioridad</option>
+          <option value="Alta"  ${leadsFilter.prioridad==='Alta'?'selected':''}>Alta</option>
+          <option value="Media" ${leadsFilter.prioridad==='Media'?'selected':''}>Media</option>
+          <option value="Baja"  ${leadsFilter.prioridad==='Baja'?'selected':''}>Baja</option>
+        </select>
+        <select class="input max-w-[120px]" onchange="leadsFilter.conWeb=this.value; render()">
+          <option value="">Web (todos)</option>
+          <option value="si" ${leadsFilter.conWeb==='si'?'selected':''}>Con web</option>
+          <option value="no" ${leadsFilter.conWeb==='no'?'selected':''}>Sin web</option>
+        </select>
+        ${paises.length > 1 ? `<select class="input max-w-[120px]" onchange="leadsFilter.pais=this.value; render()">
+          <option value="">País</option>
+          ${paises.map(p => `<option value="${escapeAttr(p)}" ${leadsFilter.pais===p?'selected':''}>${escapeHtml(p)}</option>`).join('')}
+        </select>` : ''}
+        ${ciudades.length > 1 ? `<select class="input max-w-[140px]" onchange="leadsFilter.ciudad=this.value; render()">
+          <option value="">Ciudad</option>
+          ${ciudades.map(c => `<option value="${escapeAttr(c)}" ${leadsFilter.ciudad===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+        </select>` : ''}
+        ${tipos.length > 1 ? `<select class="input max-w-[140px]" onchange="leadsFilter.tipo=this.value; render()">
+          <option value="">Rubro</option>
+          ${tipos.map(t => `<option value="${escapeAttr(t)}" ${leadsFilter.tipo===t?'selected':''}>${escapeHtml(t)}</option>`).join('')}
+        </select>` : ''}
+        <select class="input max-w-[140px]" onchange="leadsFilter.ownerId=this.value; render()">
+          <option value="">Responsable</option>
+          <option value="__none__" ${leadsFilter.ownerId==='__none__'?'selected':''}>Sin asignar</option>
+          ${state.members.map(m => `<option value="${m.id}" ${leadsFilter.ownerId===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+        </select>
+        ${(leadsFilter.q || leadsFilter.lote || leadsFilter.prioridad || leadsFilter.conWeb || leadsFilter.pais || leadsFilter.ciudad || leadsFilter.tipo || leadsFilter.ownerId) ? `
+          <button onclick="leadsFilter={q:'',lote:'',prioridad:'',conWeb:'',pais:'',ciudad:'',tipo:'',ownerId:''}; render()" class="text-xs text-gray-500 hover:text-gray-900 ml-auto">Limpiar ✕</button>
+        ` : `<span class="ml-auto text-xs text-gray-400">${leads.length} resultado${leads.length===1?'':'s'}</span>`}
+      </div>
+
+      ${leadsView === 'kanban' ? renderLeadsKanban(byStage, stages) : renderLeadsList(leads, selCount)}
+    </div>
+  `;
+}
+
+function renderLeadsKanban(byStage, stages) {
+  return `
+    <div class="overflow-x-auto -mx-4 md:-mx-10 px-4 md:px-10 pb-2">
+      <div class="flex gap-3 min-w-max">
+        ${stages.map(s => {
+          const items = byStage[s.id] || [];
+          return `
+            <div class="w-72 shrink-0 bg-gray-50 border border-gray-200 rounded-xl p-3 drop-zone"
+              data-stage="${escapeAttr(s.id)}"
+              ondragover="event.preventDefault(); this.classList.add('drag-over')"
+              ondragleave="this.classList.remove('drag-over')"
+              ondrop="event.preventDefault(); this.classList.remove('drag-over'); moveLeadStage(leadsDragId, '${escapeAttr(s.id)}')">
+              <div class="flex items-center gap-2 mb-3 px-1">
+                <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${s.dot}"></span>
+                <span class="text-xs uppercase tracking-wider font-semibold text-gray-600 truncate flex-1">${escapeHtml(s.nombre)}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-white text-gray-600 font-semibold shrink-0">${items.length}</span>
+              </div>
+              <div class="space-y-2 min-h-[80px] max-h-[70vh] overflow-y-auto pr-1">
+                ${items.length === 0 ? `<div class="text-[11px] text-gray-400 italic text-center py-6">Vacío</div>` : items.map(leadCard).join('')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function leadCard(l) {
+  const owner = l.ownerId ? state.members.find(m => m.id === l.ownerId) : null;
+  const pri = l.prioridad && LEAD_PRIORIDADES[l.prioridad];
+  const today = todayISO();
+  const reminderBadge = l.proximoSeguimiento
+    ? (l.proximoSeguimiento < today ? `<span class="text-[10px] chip bg-red-100 text-red-700">⚠ Vencido</span>`
+      : l.proximoSeguimiento === today ? `<span class="text-[10px] chip bg-amber-100 text-amber-800">📅 Hoy</span>`
+      : `<span class="text-[10px] chip bg-blue-50 text-blue-700">📅 ${fmt(l.proximoSeguimiento)}</span>`)
+    : '';
+  return `
+    <div class="bg-white border border-gray-200 rounded-lg p-3 hover:border-gray-400 hover:shadow-sm transition cursor-pointer group"
+      draggable="true"
+      ondragstart="leadsDragId='${l.id}'; this.classList.add('dragging')"
+      ondragend="this.classList.remove('dragging'); leadsDragId=null"
+      onclick="openLeadModal('${l.id}')">
+      <div class="flex items-start justify-between gap-2 mb-1">
+        <div class="text-sm font-semibold truncate flex-1">${escapeHtml(l.negocio || '(sin nombre)')}</div>
+        ${pri ? `<span class="text-[10px] chip ${pri.color} shrink-0">${l.prioridad}</span>` : ''}
+      </div>
+      ${l.contacto ? `<div class="text-xs text-gray-600 truncate">${escapeHtml(l.contacto)}</div>` : ''}
+      <div class="text-[11px] text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
+        ${l.ciudad ? `<span>📍 ${escapeHtml(l.ciudad)}</span>` : ''}
+        ${l.web ? `<span title="Tiene sitio web">🌐</span>` : `<span class="text-gray-300" title="Sin sitio web">🚫</span>`}
+        ${l.valorEstimado ? `<span class="text-green-700 font-medium">$${Number(l.valorEstimado).toLocaleString('es-AR')}</span>` : ''}
+      </div>
+      ${(reminderBadge || owner || l.tel) ? `
+        <div class="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-gray-100">
+          <div class="flex items-center gap-1.5">
+            ${owner ? `<span class="w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-semibold" style="background:${owner.color}" title="${escapeHtml(owner.name)}">${owner.name[0]}</span>` : '<span class="text-[10px] text-gray-400">Sin asignar</span>'}
+            ${reminderBadge}
+          </div>
+          ${l.tel ? `<button onclick="event.stopPropagation(); openLeadWhatsApp('${l.id}')" class="text-green-600 hover:bg-green-50 p-1 rounded transition" title="WhatsApp">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347"/></svg>
+          </button>` : ''}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderLeadsList(leads, selCount) {
+  const stages = _getStages();
+  const allSelected = selCount > 0 && leads.every(l => leadsSelection.has(l.id));
+  return `
+    ${selCount > 0 ? `
+      <div class="card p-3 bg-blue-50 border-blue-200 flex items-center gap-3 flex-wrap">
+        <span class="text-sm font-medium"><b>${selCount}</b> seleccionado${selCount===1?'':'s'}</span>
+        <select class="input max-w-[180px]" onchange="if(this.value){bulkChangeLeadStage(this.value); this.value='';}">
+          <option value="">Cambiar estado a...</option>
+          ${stages.map(s => `<option value="${escapeAttr(s.id)}">${escapeHtml(s.nombre)}</option>`).join('')}
+        </select>
+        <select class="input max-w-[180px]" onchange="if(this.value){bulkReassignLeads(this.value); this.value='';}">
+          <option value="">Reasignar a...</option>
+          <option value="__none__">Sin asignar</option>
+          ${state.members.map(m => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('')}
+        </select>
+        <button onclick="bulkDeleteLeads()" class="text-xs text-red-600 hover:bg-red-50 px-3 py-1.5 rounded transition">🗑 Borrar</button>
+        <button onclick="leadsSelection.clear(); render()" class="text-xs text-gray-500 hover:text-gray-900 ml-auto">Deseleccionar ✕</button>
+      </div>
+    ` : `
+      <div class="card p-3 flex items-center gap-3 flex-wrap text-xs text-gray-500">
+        <span>Seleccionar primeros:</span>
+        ${[10, 25, 50, 100].map(n => `<button onclick="selectFirstNLeads(${n})" class="chip bg-gray-100 hover:bg-gray-200 cursor-pointer">${n}</button>`).join('')}
+        <span class="ml-2 text-gray-400">tildá leads para acciones masivas</span>
+      </div>
+    `}
+
+    <div class="card overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wider">
+            <tr>
+              <th class="w-8 px-3 py-2.5"><input type="checkbox" ${allSelected?'checked':''} onchange="toggleSelectAllLeads(this.checked)" /></th>
+              <th class="text-left px-3 py-2.5">Negocio</th>
+              <th class="text-left px-3 py-2.5">Contacto</th>
+              <th class="text-left px-3 py-2.5">Ciudad</th>
+              <th class="text-left px-3 py-2.5">Rubro</th>
+              <th class="text-left px-3 py-2.5">Prio</th>
+              <th class="text-left px-3 py-2.5">Web</th>
+              <th class="text-left px-3 py-2.5">Estado</th>
+              <th class="text-left px-3 py-2.5">Resp</th>
+              <th class="text-right px-3 py-2.5">Valor</th>
+              <th class="text-left px-3 py-2.5">Seguim</th>
+              <th class="w-20 px-3 py-2.5"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${leads.length === 0 ? `<tr><td colspan="12" class="p-6 text-center text-gray-400 text-sm">Sin leads en este filtro.</td></tr>` : leads.map(l => {
+              const s = _stageOf(l.estado);
+              const owner = l.ownerId ? state.members.find(m => m.id === l.ownerId) : null;
+              const pri = l.prioridad && LEAD_PRIORIDADES[l.prioridad];
+              const sel = leadsSelection.has(l.id);
+              return `
+                <tr class="border-t border-gray-100 hover:bg-gray-50 ${sel?'bg-blue-50':''}">
+                  <td class="px-3 py-2"><input type="checkbox" ${sel?'checked':''} onchange="toggleLeadSelection('${l.id}')" /></td>
+                  <td class="px-3 py-2"><button onclick="openLeadModal('${l.id}')" class="font-medium hover:text-blue-700 text-left">${escapeHtml(l.negocio || '-')}</button></td>
+                  <td class="px-3 py-2 text-gray-600">${escapeHtml(l.contacto || '')}</td>
+                  <td class="px-3 py-2 text-gray-600">${escapeHtml(l.ciudad || '')}</td>
+                  <td class="px-3 py-2 text-gray-600">${escapeHtml(l.tipo || '')}</td>
+                  <td class="px-3 py-2">${pri ? `<span class="text-[10px] chip ${pri.color}">${l.prioridad}</span>` : ''}</td>
+                  <td class="px-3 py-2">${l.web ? `<a href="${escapeAttr(l.web.startsWith('http')?l.web:'https://'+l.web)}" target="_blank" onclick="event.stopPropagation()" class="text-blue-600 hover:underline text-xs">🌐</a>` : '<span class="text-gray-300 text-xs">—</span>'}</td>
+                  <td class="px-3 py-2"><span class="text-xs chip bg-gray-100 text-gray-700"><span class="inline-block w-2 h-2 rounded-full mr-1 align-middle" style="background:${s.dot}"></span>${escapeHtml(s.nombre)}</span></td>
+                  <td class="px-3 py-2">${owner ? `<span class="w-5 h-5 inline-flex items-center justify-center rounded-full text-white text-[10px] font-semibold" style="background:${owner.color}" title="${escapeHtml(owner.name)}">${owner.name[0]}</span>` : '<span class="text-xs text-gray-400">—</span>'}</td>
+                  <td class="px-3 py-2 text-right text-green-700 font-medium">${l.valorEstimado ? '$'+Number(l.valorEstimado).toLocaleString('es-AR') : ''}</td>
+                  <td class="px-3 py-2 text-gray-500 text-xs">${l.proximoSeguimiento ? fmt(l.proximoSeguimiento) : ''}</td>
+                  <td class="px-3 py-2 text-right">
+                    ${l.tel ? `<button onclick="openLeadWhatsApp('${l.id}')" class="text-green-600 hover:bg-green-50 p-1 rounded transition" title="WhatsApp">💬</button>` : ''}
+                    <button onclick="openLeadModal('${l.id}')" class="text-gray-500 hover:text-gray-900 p-1" title="Editar">✎</button>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// ===== Selección múltiple =====
+function toggleLeadSelection(id) {
+  if (leadsSelection.has(id)) leadsSelection.delete(id);
+  else leadsSelection.add(id);
+  render();
+}
+function toggleSelectAllLeads(check) {
+  const leads = _getFilteredLeads();
+  if (check) leads.forEach(l => leadsSelection.add(l.id));
+  else leads.forEach(l => leadsSelection.delete(l.id));
+  render();
+}
+function selectFirstNLeads(n) {
+  leadsSelection.clear();
+  _getFilteredLeads().slice(0, n).forEach(l => leadsSelection.add(l.id));
+  render();
+}
+
+// ===== Mover de etapa (drag-drop) =====
+function moveLeadStage(leadId, newStageId) {
+  if (!leadId) return;
+  const l = (state.leads || []).find(x => x.id === leadId);
+  if (!l) return;
+  if (l.estado === newStageId) return;
+  const prevStage = l.estado;
+  l.estado = newStageId;
+  l.updatedAt = new Date().toISOString();
+  _logLeadActivity('lead_estado', `${l.negocio}: ${prevStage || '-'} → ${newStageId}`, l.id);
+  save();
+  if (newStageId === 'ganado') {
+    _promptConvertLeadToProject(l.id);
+  } else {
+    render();
+  }
+}
+
+// ===== Acciones masivas =====
+function bulkChangeLeadStage(stageId) {
+  if (leadsSelection.size === 0) return;
+  const ids = [...leadsSelection];
+  (state.leads || []).forEach(l => {
+    if (ids.includes(l.id)) {
+      const prev = l.estado;
+      l.estado = stageId;
+      l.updatedAt = new Date().toISOString();
+      _logLeadActivity('lead_estado_masivo', `${l.negocio}: ${prev} → ${stageId}`, l.id);
+    }
+  });
+  save();
+  showToast(`${ids.length} lead${ids.length===1?'':'s'} actualizado${ids.length===1?'':'s'}`, 'success');
+  render();
+}
+function bulkReassignLeads(ownerId) {
+  if (leadsSelection.size === 0) return;
+  const ids = [...leadsSelection];
+  const assigneeName = ownerId === '__none__' ? 'Sin asignar' : (state.members.find(m => m.id === ownerId)?.name || '-');
+  (state.leads || []).forEach(l => {
+    if (ids.includes(l.id)) {
+      l.ownerId = ownerId === '__none__' ? null : ownerId;
+      l.updatedAt = new Date().toISOString();
+      _logLeadActivity('lead_reasignar', `${l.negocio} → ${assigneeName}`, l.id);
+    }
+  });
+  save();
+  showToast(`${ids.length} lead${ids.length===1?'':'s'} reasignado${ids.length===1?'':'s'} a ${assigneeName}`, 'success');
+  render();
+}
+function bulkDeleteLeads() {
+  if (leadsSelection.size === 0) return;
+  const ids = [...leadsSelection];
+  if (!confirm(`¿Borrar ${ids.length} lead${ids.length===1?'':'s'}? Esta acción no se puede deshacer.`)) return;
+  state.leads = (state.leads || []).filter(l => !ids.includes(l.id));
+  state.tasks = (state.tasks || []).filter(t => !ids.includes(t.leadId));
+  leadsSelection.clear();
+  save();
+  showToast(`${ids.length} lead${ids.length===1?'':'s'} eliminado${ids.length===1?'':'s'}`, 'info');
+  render();
+}
+
+// ===== Modal: crear / editar lead =====
+let _currentLeadId = null;
+function openLeadModal(id) {
+  _currentLeadId = id || null;
+  const stages = _getStages();
+  const l = id ? (state.leads || []).find(x => x.id === id) : {
+    id: '', negocio: '', contacto: '', tel: '', email: '',
+    ciudad: '', provincia: '', pais: 'Argentina', tipo: '', web: '',
+    lote: '', prioridad: 'Media', website_status: '',
+    estado: 'nuevo', ownerId: currentMemberId,
+    ultimoContacto: '', proximoSeguimiento: '', recordatorioHora: '', recordatorioNota: '',
+    valorEstimado: '', notas: '',
+  };
+  if (!l) return;
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div class="flex-1 min-w-0">
+          <h2 class="text-xl font-semibold">${id ? escapeHtml(l.negocio || 'Editar lead') : 'Nuevo lead'}</h2>
+          ${l.convertedToProjectId ? `<p class="text-xs text-green-700 mt-0.5">✓ Convertido a proyecto</p>` : ''}
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      <form onsubmit="submitLead(event)" class="space-y-3">
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Negocio <span class="text-red-500">*</span></label>
+            <input name="negocio" required class="input" value="${escapeAttr(l.negocio)}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Contacto</label>
+            <input name="contacto" class="input" value="${escapeAttr(l.contacto)}" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Teléfono</label>
+            <input name="tel" class="input" value="${escapeAttr(l.tel)}" placeholder="+54 9 ..." />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Email</label>
+            <input type="email" name="email" class="input" value="${escapeAttr(l.email)}" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Ciudad</label>
+            <input name="ciudad" class="input" value="${escapeAttr(l.ciudad)}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Provincia</label>
+            <input name="provincia" class="input" value="${escapeAttr(l.provincia)}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">País</label>
+            <input name="pais" class="input" value="${escapeAttr(l.pais)}" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Rubro</label>
+            <input name="tipo" class="input" value="${escapeAttr(l.tipo)}" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Web (vacío = no tiene)</label>
+            <input name="web" class="input" value="${escapeAttr(l.web)}" placeholder="https://..." />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Prioridad</label>
+            <select name="prioridad" class="input">
+              <option value="">—</option>
+              <option value="Alta"  ${l.prioridad==='Alta'?'selected':''}>Alta</option>
+              <option value="Media" ${l.prioridad==='Media'?'selected':''}>Media</option>
+              <option value="Baja"  ${l.prioridad==='Baja'?'selected':''}>Baja</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Estado del sitio</label>
+            <input name="website_status" class="input" value="${escapeAttr(l.website_status)}" placeholder="Lento, Sin web..." />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Valor estimado (ARS)</label>
+            <input type="number" name="valorEstimado" step="1" min="0" class="input" value="${escapeAttr(l.valorEstimado || '')}" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Estado (etapa)</label>
+            <select name="estado" class="input">
+              ${stages.map(s => `<option value="${escapeAttr(s.id)}" ${l.estado===s.id?'selected':''}>${escapeHtml(s.nombre)}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Responsable</label>
+            <select name="ownerId" class="input">
+              <option value="">— Sin asignar —</option>
+              ${state.members.map(m => `<option value="${m.id}" ${l.ownerId===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs text-gray-500">Base / lote</label>
+            <input name="lote" class="input" value="${escapeAttr(l.lote)}" placeholder="Nombre del archivo o grupo" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500">Último contacto</label>
+            <input type="date" name="ultimoContacto" class="input" value="${escapeAttr(l.ultimoContacto || '')}" />
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-gray-100">
+          <div class="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">Recordatorio</div>
+          <div class="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
+            <div>
+              <label class="text-xs text-gray-500">Próximo seguimiento</label>
+              <input type="date" name="proximoSeguimiento" class="input" value="${escapeAttr(l.proximoSeguimiento || '')}" />
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Hora</label>
+              <input type="time" name="recordatorioHora" class="input w-24" value="${escapeAttr(l.recordatorioHora || '')}" />
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Nota</label>
+              <input name="recordatorioNota" class="input" value="${escapeAttr(l.recordatorioNota)}" placeholder="Qué hay que hacer" />
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-gray-500">Notas</label>
+          <textarea name="notas" rows="3" class="input" placeholder="Historial de conversación, pedidos, etc.">${escapeHtml(l.notas)}</textarea>
+        </div>
+
+        <div class="flex justify-between items-center pt-3 border-t border-gray-100">
+          ${id ? `<button type="button" onclick="deleteLead('${l.id}')" class="text-xs text-red-500 hover:text-red-700">Eliminar</button>` : '<span></span>'}
+          <div class="flex gap-2">
+            ${id && l.tel ? `<button type="button" class="btn-ghost text-xs" onclick="openLeadWhatsApp('${l.id}')">💬 WhatsApp</button>` : ''}
+            <button type="button" class="btn-ghost" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn-primary">${id ? 'Guardar' : 'Crear lead'}</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  `);
+}
+
+function submitLead(e) {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const now = new Date().toISOString();
+  state.leads = state.leads || [];
+
+  let lead;
+  if (_currentLeadId) {
+    const idx = state.leads.findIndex(l => l.id === _currentLeadId);
+    if (idx < 0) return;
+    state.leads[idx] = { ...state.leads[idx], ...data, ownerId: data.ownerId || null, updatedAt: now };
+    lead = state.leads[idx];
+  } else {
+    lead = {
+      id: uid(),
+      ...data,
+      ownerId: data.ownerId || null,
+      creadoAt: now,
+      updatedAt: now,
+    };
+    state.leads.push(lead);
+    _logLeadActivity('lead_nuevo', `Alta: ${lead.negocio}`, lead.id);
+  }
+
+  // Sincronizar tarea de recordatorio
+  _syncLeadReminderTask(lead);
+
+  save();
+  closeModal();
+
+  // Si pasa a ganado y no estaba convertido, preguntar
+  if (lead.estado === 'ganado' && !lead.convertedToProjectId) {
+    _promptConvertLeadToProject(lead.id);
+    return;
+  }
+
+  render();
+  showToast(_currentLeadId ? 'Lead actualizado' : 'Lead creado', 'success');
+  _currentLeadId = null;
+}
+
+function _syncLeadReminderTask(lead) {
+  state.tasks = state.tasks || [];
+  // Borrar tareas previas de este lead
+  state.tasks = state.tasks.filter(t => t.leadId !== lead.id);
+  // Si tiene fecha de seguimiento y no está en estado terminal → crear task
+  if (lead.proximoSeguimiento && lead.estado !== 'ganado' && lead.estado !== 'perdido') {
+    state.tasks.push({
+      id: uid(),
+      title: (lead.recordatorioNota || `Contactar ${lead.negocio}`),
+      projectId: null,
+      leadId: lead.id,
+      assigneeId: lead.ownerId || currentMemberId,
+      status: 'TODO',
+      dueDate: lead.proximoSeguimiento,
+      dueTime: lead.recordatorioHora || '',
+      createdAt: new Date().toISOString(),
+      createdBy: currentMemberId,
+    });
+  }
+}
+
+function deleteLead(id) {
+  const l = (state.leads || []).find(x => x.id === id);
+  if (!l) return;
+  if (!confirm(`¿Eliminar lead "${l.negocio}"? Esta acción no se puede deshacer.`)) return;
+  state.leads = state.leads.filter(x => x.id !== id);
+  state.tasks = (state.tasks || []).filter(t => t.leadId !== id);
+  save();
+  closeModal();
+  render();
+  showToast('Lead eliminado', 'info');
+}
+
+// ===== Lead → Proyecto =====
+function _promptConvertLeadToProject(leadId) {
+  const l = (state.leads || []).find(x => x.id === leadId);
+  if (!l) return;
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-xl font-semibold">🎉 Lead ganado</h2>
+          <p class="text-sm text-gray-500 mt-0.5">${escapeHtml(l.negocio)}</p>
+        </div>
+        <button onclick="closeModal(); render()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+      <p class="text-sm mb-5">¿Querés crear un <b>proyecto nuevo</b> con los datos de este lead?</p>
+      <div class="bg-gray-50 rounded-lg p-3 mb-5 text-sm space-y-1">
+        <div><b>Nombre:</b> ${escapeHtml(l.negocio)}</div>
+        ${l.contacto ? `<div><b>Contacto:</b> ${escapeHtml(l.contacto)}</div>` : ''}
+        ${l.tel ? `<div><b>Teléfono:</b> ${escapeHtml(l.tel)}</div>` : ''}
+        ${l.email ? `<div><b>Email:</b> ${escapeHtml(l.email)}</div>` : ''}
+        ${l.valorEstimado ? `<div><b>Valor estimado:</b> $${Number(l.valorEstimado).toLocaleString('es-AR')}</div>` : ''}
+      </div>
+      <div class="flex justify-end gap-2">
+        <button class="btn-ghost" onclick="closeModal(); render()">No, dejar solo como lead</button>
+        <button class="btn-primary" onclick="convertLeadToProject('${l.id}')">✓ Crear proyecto</button>
+      </div>
+    </div>
+  `);
+}
+
+function convertLeadToProject(leadId) {
+  const l = (state.leads || []).find(x => x.id === leadId);
+  if (!l) return;
+  state.projects = state.projects || [];
+  const proj = {
+    id: uid(),
+    name: l.negocio,
+    status: 'ACTIVE_FIXED',
+    color: '#10b981',
+    categories: [],
+    contactName: l.contacto || '',
+    contactPhone: l.tel || '',
+    contactEmail: l.email || '',
+    city: l.ciudad || '',
+    country: l.pais || '',
+    industry: l.tipo || '',
+    website: l.web || '',
+    startDate: todayISO(),
+    sourceLeadId: l.id,
+    createdAt: new Date().toISOString(),
+    createdBy: currentMemberId,
+  };
+  state.projects.push(proj);
+  l.convertedToProjectId = proj.id;
+  l.updatedAt = new Date().toISOString();
+  _logLeadActivity('lead_convertido', `${l.negocio} → Proyecto creado`, l.id);
+  save();
+  closeModal();
+  render();
+  showToast(`Proyecto "${proj.name}" creado 🎉`, 'success');
+}
+
+// ===== WhatsApp =====
+function openLeadWhatsApp(leadId, templateId) {
+  const l = (state.leads || []).find(x => x.id === leadId);
+  if (!l || !l.tel) return;
+  const templates = state.leadTemplates || [];
+  const tpl = templateId ? templates.find(t => t.id === templateId) : null;
+  const me = currentMember()?.name || '';
+  const resolve = (txt) => (txt || '')
+    .replace(/\{negocio\}/g, l.negocio || '')
+    .replace(/\{contacto\}/g, l.contacto || '')
+    .replace(/\{ciudad\}/g, l.ciudad || '')
+    .replace(/\{mi_nombre\}/g, me);
+
+  const initialText = tpl ? resolve(tpl.texto) : '';
+
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold">💬 WhatsApp a ${escapeHtml(l.negocio)}</h2>
+          <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(l.contacto || '')} · ${escapeHtml(l.tel)}</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      ${templates.length > 0 ? `
+        <div class="mb-3">
+          <label class="text-xs text-gray-500">Plantilla</label>
+          <div class="flex flex-wrap gap-1 mt-1">
+            ${templates.map(t => `<button onclick="document.getElementById('waMsg').value = ${JSON.stringify(resolve(t.texto)).replace(/"/g,'&quot;')}" class="chip bg-gray-100 hover:bg-gray-200 cursor-pointer text-xs">${escapeHtml(t.nombre)}</button>`).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <div>
+        <label class="text-xs text-gray-500">Mensaje</label>
+        <textarea id="waMsg" rows="8" class="input font-sans">${escapeHtml(initialText)}</textarea>
+        <p class="text-[11px] text-gray-400 mt-1">Variables: <code>{negocio}</code> <code>{contacto}</code> <code>{ciudad}</code> <code>{mi_nombre}</code></p>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-4 mt-4 border-t border-gray-100">
+        <button class="btn-ghost" onclick="closeModal()">Cancelar</button>
+        <button class="btn-primary" onclick="_sendLeadWhatsApp('${l.id}')">Abrir WhatsApp →</button>
+      </div>
+    </div>
+  `);
+}
+
+function _sendLeadWhatsApp(leadId) {
+  const l = (state.leads || []).find(x => x.id === leadId);
+  if (!l) return;
+  const msg = document.getElementById('waMsg')?.value || '';
+  const phone = (l.tel || '').replace(/[^\d]/g, '');
+  if (!phone) { alert('Sin teléfono válido'); return; }
+  const url = `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+  window.open(url, '_blank');
+  l.ultimoContacto = todayISO();
+  l.updatedAt = new Date().toISOString();
+  _logLeadActivity('whatsapp', `WhatsApp enviado a ${l.negocio}`, l.id);
+  save();
+  closeModal();
+  render();
+}
+
+// ===== Editor de pipeline =====
+function openLeadsPipelineEditor() {
+  const stages = _getStages();
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold">⚙ Pipeline</h2>
+          <p class="text-xs text-gray-500 mt-0.5">Editá etapas, orden y colores. "Ganado" y "Perdido" no se pueden eliminar.</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      <div class="space-y-2 mb-4" id="stagesList">
+        ${stages.map((s, i) => `
+          <div class="flex items-center gap-2 p-2 rounded-lg border border-gray-200" data-stage-id="${escapeAttr(s.id)}">
+            <input type="color" value="${s.dot}" onchange="editStageField('${s.id}', 'dot', this.value)" class="w-8 h-8 rounded cursor-pointer border border-gray-300" />
+            <input class="input flex-1" value="${escapeAttr(s.nombre)}" onchange="editStageField('${s.id}', 'nombre', this.value)" />
+            <button onclick="moveStage('${s.id}', -1)" class="text-gray-500 hover:text-gray-900 px-2 py-1" ${i===0?'disabled':''}>↑</button>
+            <button onclick="moveStage('${s.id}', 1)" class="text-gray-500 hover:text-gray-900 px-2 py-1" ${i===stages.length-1?'disabled':''}>↓</button>
+            ${PROTECTED_STAGES.has(s.id) ? '<span class="text-[10px] text-gray-400 px-2">protegida</span>' : `<button onclick="deleteStage('${s.id}')" class="text-red-500 hover:text-red-700 px-2 py-1">✕</button>`}
+          </div>
+        `).join('')}
+      </div>
+
+      <button onclick="addStage()" class="btn-ghost w-full">+ Agregar etapa</button>
+
+      <div class="flex justify-end gap-2 pt-4 mt-4 border-t border-gray-100">
+        <button class="btn-primary" onclick="closeModal(); render()">Listo</button>
+      </div>
+    </div>
+  `);
+}
+
+function editStageField(id, field, value) {
+  const s = (state.pipelineStages || []).find(x => x.id === id);
+  if (!s) return;
+  s[field] = value;
+  save();
+}
+function moveStage(id, delta) {
+  const stages = _getStages();
+  const idx = stages.findIndex(s => s.id === id);
+  if (idx < 0) return;
+  const target = idx + delta;
+  if (target < 0 || target >= stages.length) return;
+  // Swap orden
+  const a = stages[idx], b = stages[target];
+  const ao = a.orden, bo = b.orden;
+  a.orden = bo; b.orden = ao;
+  save();
+  openLeadsPipelineEditor();
+}
+function addStage() {
+  const nombre = prompt('Nombre de la etapa:');
+  if (!nombre) return;
+  const id = nombre.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '-' + Math.random().toString(36).slice(2,6);
+  const maxOrden = Math.max(0, ...(state.pipelineStages || []).map(s => s.orden || 0));
+  state.pipelineStages = state.pipelineStages || [];
+  state.pipelineStages.push({ id, nombre, dot: '#94a3b8', orden: maxOrden + 1 });
+  save();
+  openLeadsPipelineEditor();
+}
+function deleteStage(id) {
+  if (PROTECTED_STAGES.has(id)) return;
+  const count = (state.leads || []).filter(l => l.estado === id).length;
+  const msg = count > 0 ? `Hay ${count} lead${count===1?'':'s'} en esta etapa que pasarán a "Nuevo". ¿Continuar?` : '¿Eliminar esta etapa?';
+  if (!confirm(msg)) return;
+  (state.leads || []).forEach(l => { if (l.estado === id) l.estado = 'nuevo'; });
+  state.pipelineStages = (state.pipelineStages || []).filter(s => s.id !== id);
+  save();
+  openLeadsPipelineEditor();
+}
+
+// ===== Editor de plantillas WhatsApp =====
+function openLeadsTemplatesEditor() {
+  const templates = state.leadTemplates || [];
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold">💬 Plantillas WhatsApp</h2>
+          <p class="text-xs text-gray-500 mt-0.5">Variables: <code>{negocio}</code> <code>{contacto}</code> <code>{ciudad}</code> <code>{mi_nombre}</code></p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      <div class="space-y-3 mb-4 max-h-[60vh] overflow-y-auto">
+        ${templates.length === 0 ? '<div class="text-sm text-gray-400 italic text-center py-6">Sin plantillas. Agregá una abajo.</div>' : templates.map(t => `
+          <div class="border border-gray-200 rounded-lg p-3">
+            <div class="flex items-center gap-2 mb-2">
+              <input class="input flex-1" value="${escapeAttr(t.nombre)}" onchange="editTemplate('${t.id}', 'nombre', this.value)" />
+              <button onclick="deleteTemplate('${t.id}')" class="text-red-500 hover:text-red-700 px-2">✕</button>
+            </div>
+            <textarea rows="4" class="input font-sans text-sm" onchange="editTemplate('${t.id}', 'texto', this.value)">${escapeHtml(t.texto)}</textarea>
+          </div>
+        `).join('')}
+      </div>
+
+      <button onclick="addTemplate()" class="btn-ghost w-full">+ Agregar plantilla</button>
+
+      <div class="flex justify-end gap-2 pt-4 mt-4 border-t border-gray-100">
+        <button class="btn-primary" onclick="closeModal()">Listo</button>
+      </div>
+    </div>
+  `);
+}
+function editTemplate(id, field, value) {
+  const t = (state.leadTemplates || []).find(x => x.id === id);
+  if (!t) return;
+  t[field] = value;
+  save();
+}
+function addTemplate() {
+  state.leadTemplates = state.leadTemplates || [];
+  state.leadTemplates.push({ id: uid(), nombre: 'Nueva plantilla', texto: 'Hola {contacto}!\n\n...\n\n{mi_nombre}' });
+  save();
+  openLeadsTemplatesEditor();
+}
+function deleteTemplate(id) {
+  if (!confirm('¿Eliminar esta plantilla?')) return;
+  state.leadTemplates = (state.leadTemplates || []).filter(t => t.id !== id);
+  save();
+  openLeadsTemplatesEditor();
+}
+
+// ===== Importador Excel/CSV =====
+let _xlsxLoaded = false;
+async function _loadXLSX() {
+  if (_xlsxLoaded && window.XLSX) return window.XLSX;
+  await new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload = () => { _xlsxLoaded = true; res(); };
+    s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  return window.XLSX;
+}
+
+const _IMPORT_FIELDS = [
+  { key: 'negocio',        label: 'Negocio *', keywords: ['negocio','empresa','nombre','name','business'] },
+  { key: 'contacto',       label: 'Contacto',  keywords: ['contacto','contact','nombre contacto','titular'] },
+  { key: 'tel',            label: 'Teléfono',  keywords: ['tel','telefono','phone','whatsapp','celular','movil'] },
+  { key: 'email',          label: 'Email',     keywords: ['email','mail','correo'] },
+  { key: 'ciudad',         label: 'Ciudad',    keywords: ['ciudad','city','localidad'] },
+  { key: 'provincia',      label: 'Provincia', keywords: ['provincia','state','region'] },
+  { key: 'pais',           label: 'País',      keywords: ['pais','país','country'] },
+  { key: 'tipo',           label: 'Rubro',     keywords: ['rubro','tipo','category','industria','industry'] },
+  { key: 'web',            label: 'Web',       keywords: ['web','sitio','website','url'] },
+  { key: 'prioridad',      label: 'Prioridad', keywords: ['prioridad','priority'] },
+  { key: 'website_status', label: 'Est. web',  keywords: ['estado web','website status','web status'] },
+  { key: 'valorEstimado',  label: 'Valor',     keywords: ['valor','value','monto','budget','estimado'] },
+  { key: 'notas',          label: 'Notas',     keywords: ['notas','notes','observaciones','comentarios'] },
+];
+
+let _importData = null; // { headers, rows, mapping, loteName }
+
+function openLeadsImporter() {
+  _importData = null;
+  openModal(`
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold">⬆ Importar leads</h2>
+          <p class="text-xs text-gray-500 mt-0.5">Excel (.xlsx) o CSV. Después mapeás columnas.</p>
+        </div>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-gray-900 text-lg">✕</button>
+      </div>
+
+      <div id="importStep1">
+        <label class="block border-2 border-dashed border-gray-300 rounded-lg p-10 text-center hover:border-blue-500 hover:bg-blue-50 cursor-pointer transition">
+          <div class="text-sm text-gray-500 mb-2">Click para elegir archivo</div>
+          <div class="text-xs text-gray-400">.xlsx · .xls · .csv</div>
+          <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="_handleImportFile(event)" />
+        </label>
+        <p class="text-xs text-gray-400 mt-3 text-center">Primera fila debe ser el encabezado con los nombres de columna.</p>
+      </div>
+
+      <div id="importStep2" class="hidden"></div>
+    </div>
+  `);
+}
+
+async function _handleImportFile(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const loteName = file.name.replace(/\.[^.]+$/, '');
+  try {
+    const XLSX = await _loadXLSX();
+    const data = await file.arrayBuffer();
+    const wb = XLSX.read(data, { type: 'array' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    if (rows.length === 0) { alert('Archivo vacío'); return; }
+    const headers = Object.keys(rows[0]);
+    // Auto-mapeo por keywords
+    const mapping = {};
+    _IMPORT_FIELDS.forEach(f => {
+      const matched = headers.find(h => f.keywords.some(k => h.toLowerCase().includes(k)));
+      if (matched) mapping[f.key] = matched;
+    });
+    _importData = { headers, rows, mapping, loteName };
+    _renderImportStep2();
+  } catch (err) {
+    alert('Error leyendo archivo: ' + err.message);
+  }
+}
+
+function _renderImportStep2() {
+  const { headers, rows, mapping, loteName } = _importData;
+  document.getElementById('importStep1').classList.add('hidden');
+  const step2 = document.getElementById('importStep2');
+  step2.classList.remove('hidden');
+  step2.innerHTML = `
+    <div class="mb-3">
+      <label class="text-xs text-gray-500">Nombre de la base</label>
+      <input id="importLote" class="input" value="${escapeAttr(loteName)}" placeholder="Nombre para agrupar esta carga" />
+    </div>
+
+    <div class="mb-3 text-xs text-gray-500">${rows.length} filas detectadas. Mapeá las columnas:</div>
+
+    <div class="space-y-1.5 max-h-[50vh] overflow-y-auto border border-gray-200 rounded-lg p-2 mb-3">
+      ${_IMPORT_FIELDS.map(f => `
+        <div class="flex items-center gap-2">
+          <span class="text-xs w-28 text-gray-600">${f.label}</span>
+          <select class="input flex-1" onchange="_importData.mapping['${f.key}']=this.value">
+            <option value="">— no mapear —</option>
+            ${headers.map(h => `<option value="${escapeAttr(h)}" ${mapping[f.key]===h?'selected':''}>${escapeHtml(h)}</option>`).join('')}
+          </select>
+        </div>
+      `).join('')}
+    </div>
+
+    <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 mb-3">
+      <b>Obligatorio:</b> columna "Negocio". Las demás son opcionales. Los leads se cargan como <b>Sin asignar</b>, estado <b>Nuevo</b>.
+    </div>
+
+    <div class="flex justify-end gap-2 pt-3 border-t border-gray-100">
+      <button class="btn-ghost" onclick="closeModal()">Cancelar</button>
+      <button class="btn-primary" onclick="_confirmImport()">Importar ${rows.length} lead${rows.length===1?'':'s'}</button>
+    </div>
+  `;
+}
+
+function _confirmImport() {
+  const { rows, mapping } = _importData;
+  const lote = document.getElementById('importLote').value.trim() || _importData.loteName;
+  if (!mapping.negocio) { alert('Mapeá al menos "Negocio"'); return; }
+
+  const now = new Date().toISOString();
+  const newLeads = rows.map(row => {
+    const l = { id: uid(), estado: 'nuevo', ownerId: null, lote, creadoAt: now };
+    _IMPORT_FIELDS.forEach(f => {
+      const srcCol = mapping[f.key];
+      if (!srcCol) return;
+      let val = row[srcCol];
+      if (val != null && val !== '') {
+        if (f.key === 'valorEstimado') val = Number(String(val).replace(/[^\d.-]/g, '')) || 0;
+        l[f.key] = val;
+      }
+    });
+    return l;
+  }).filter(l => l.negocio);  // descartar filas sin negocio
+
+  state.leads = (state.leads || []).concat(newLeads);
+  _logLeadActivity('import', `Importados ${newLeads.length} leads (base: ${lote})`, null);
+  save();
+  closeModal();
+  render();
+  showToast(`${newLeads.length} lead${newLeads.length===1?'':'s'} importado${newLeads.length===1?'':'s'} ✓`, 'success');
+  _importData = null;
 }
 
 // ============================================================
