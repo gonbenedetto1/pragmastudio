@@ -4061,11 +4061,13 @@ function openInvoiceModal(item) {
 
   // Precarga: priorizá el cliente vinculado al proyecto; si no hay, caé a la
   // heurística vieja (project.taxId → CUIT, si no Consumidor Final).
+  // Para items DEMO, usa el cliente ficticio adjunto.
   const client = p?.clientId ? getClient(p.clientId) : null;
-  const projTaxId = (client?.docNumber || p?.taxId || '').replace(/[^\d]/g, '');
-  const defaultDocType = client?.docType || (projTaxId.length === 11 ? '80' : '99');
+  const demoClient = item._demoClient || null;
+  const projTaxId = (demoClient?.docNumber || client?.docNumber || p?.taxId || '').toString().replace(/[^\d]/g, '');
+  const defaultDocType = String(demoClient?.docType || client?.docType || (projTaxId.length === 11 ? '80' : '99'));
   const defaultDocNumber = projTaxId;
-  const defaultName = client?.name || p?.companyName || p?.contactName || p?.name || '';
+  const defaultName = demoClient?.name || client?.name || p?.companyName || p?.contactName || p?.name || '';
   // Condición IVA del receptor (obligatorio AFIP). Desde el cliente; si no, Consumidor Final.
   const defaultCondCode = client?.condicionIVA ? condicionIVACode(client.condicionIVA) : 5;
 
@@ -4386,7 +4388,7 @@ function backToEditInvoice() {
   }
 }
 
-function renderInvoiceLoading(currentStep) {
+function renderInvoiceLoading(currentStep, isDemo) {
   // currentStep: 1 = validando, 2 = WSAA, 3 = CAE, 4 = guardando
   const step = (n, label, done, active) => `
     <div class="inv-step ${done?'done':active?'active':'pending'}">
@@ -4396,10 +4398,11 @@ function renderInvoiceLoading(currentStep) {
   `;
   return `
     <div class="p-8 inv-slide-in">
+      ${isDemo ? `<div class="text-center mb-3"><span class="chip bg-amber-100 text-amber-800 text-[11px] font-semibold">🎬 MODO DEMO</span></div>` : ''}
       <div class="flex flex-col items-center mb-8 mt-4">
         <div class="inv-spinner mb-5"></div>
-        <h2 class="text-xl font-semibold text-gray-900">Emitiendo Factura C en AFIP</h2>
-        <p class="text-sm text-gray-500 mt-1 inv-pulse-loading">No cierres la ventana...</p>
+        <h2 class="text-xl font-semibold text-gray-900">Emitiendo Factura C ${isDemo ? '(demo)' : 'en AFIP'}</h2>
+        <p class="text-sm text-gray-500 mt-1 inv-pulse-loading">${isDemo ? 'Simulando emisión...' : 'No cierres la ventana...'}</p>
       </div>
       <div class="space-y-1.5 max-w-xs mx-auto">
         ${step(1, 'Validando datos',         currentStep > 1, currentStep === 1)}
@@ -4415,16 +4418,17 @@ async function confirmEmitInvoice() {
   if (!_currentInvoiceItem || !_currentInvoiceForm) return;
   const item = _currentInvoiceItem;
   const data = _currentInvoiceForm;
+  const isDemo = !!item._demo;
 
   // Reemplazá el modal entero con la pantalla de loading
   const modalContent = document.getElementById('modalContent');
-  if (modalContent) modalContent.innerHTML = renderInvoiceLoading(1);
+  if (modalContent) modalContent.innerHTML = renderInvoiceLoading(1, isDemo);
 
   // Pequeño delay visual para que se vea el "validando"
   await new Promise(r => setTimeout(r, 350));
-  if (modalContent) modalContent.innerHTML = renderInvoiceLoading(2);
-  await new Promise(r => setTimeout(r, 250));
-  if (modalContent) modalContent.innerHTML = renderInvoiceLoading(3);
+  if (modalContent) modalContent.innerHTML = renderInvoiceLoading(2, isDemo);
+  await new Promise(r => setTimeout(r, 450));  // un poco más largo para que luzca en video
+  if (modalContent) modalContent.innerHTML = renderInvoiceLoading(3, isDemo);
 
   try {
     const payload = {
@@ -4437,7 +4441,36 @@ async function confirmEmitInvoice() {
       serviceToDate: data.serviceToDate,
       dueDate: data.dueDate,
     };
-    const result = await callApi('/api/afip/emitir', { method: 'POST', body: payload });
+
+    // ===== Modo demo: no pegamos a AFIP, generamos CAE fake =====
+    let result;
+    if (isDemo) {
+      // Delay realista para que se vea la animación en el video
+      await new Promise(r => setTimeout(r, 900));
+      const fakeNumber = Math.floor(Math.random() * 999) + 1;
+      const todayStr = new Date().toISOString().slice(0,10).replace(/-/g,'');
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + 10);
+      const expiryStr = expiryDate.toISOString().slice(0,10).replace(/-/g,'');
+      // CAE fake de 14 dígitos (los reales son 14 dígitos)
+      const fakeCae = String(Math.floor(Math.random() * 1e14)).padStart(14, '0');
+      result = {
+        ok: true,
+        cae: fakeCae,
+        caeExpiry: expiryStr,
+        number: fakeNumber,
+        ptoVta: Number(data.ptoVta) || 3,
+        cbteTipo: 11,
+        typeName: 'Factura C',
+        date: todayStr,
+        amount: payload.amount,
+        currency: 'PES',
+        issuedAt: new Date().toISOString(),
+        issuedBy: currentMember()?.email || currentMember()?.name || 'demo',
+      };
+    } else {
+      result = await callApi('/api/afip/emitir', { method: 'POST', body: payload });
+    }
 
     // CAE obtenido — pasamos al paso 4
     if (modalContent) modalContent.innerHTML = renderInvoiceLoading(4);
@@ -4471,6 +4504,7 @@ async function confirmEmitInvoice() {
       _serviceToDate: data.serviceToDate,
       _dueDate: data.dueDate,
       _concept: payload.concept,
+      _demo: isDemo,  // marca para watermark en el PDF y para limpieza
     };
     state.invoices = state.invoices || [];
     state.invoices.push(invoice);
@@ -4654,6 +4688,8 @@ function openInvoicePdf(invoice) {
   .actions button { background: #111; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 500; }
   .actions button.ghost { background: #fff; color: #111; border: 1px solid #ddd; }
   @media print { .actions { display: none; } body { font-size: 11px; } }
+  .demo-watermark { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%) rotate(-28deg); font-size: 140px; font-weight: 900; color: rgba(239,68,68,.12); letter-spacing: 20px; pointer-events: none; z-index: 99; white-space: nowrap; }
+  .demo-banner { background: #fef3c7; border: 2px solid #f59e0b; padding: 8px 14px; margin: 0 0 12px; border-radius: 8px; font-size: 12px; color: #78350f; text-align: center; }
 </style>
 </head>
 <body>
@@ -4661,7 +4697,9 @@ function openInvoicePdf(invoice) {
   <button class="ghost" onclick="window.close()">Cerrar</button>
   <button onclick="window.print()">Imprimir / Guardar PDF</button>
 </div>
+${invoice._demo ? `<div class="demo-watermark">DEMO</div>` : ''}
 <div class="wrap">
+${invoice._demo ? `<div class="demo-banner">🎬 <b>MODO DEMO</b> · Esta factura NO fue emitida en AFIP. Es solo para demostración / grabación de video.</div>` : ''}
   <div class="head">
     <div class="emisor">
       <h1>Pragma Studio</h1>
@@ -6774,6 +6812,145 @@ function moveContentStatus(id, newStatus) {
   render();
 }
 
+// ============================================================
+// MODO DEMO — Datos de prueba para grabar video de facturación
+// ============================================================
+function _demoCount() {
+  const inc = (state.incomes || []).filter(i => i._demo).length;
+  const inv = (state.invoices || []).filter(i => i._demo).length;
+  return { inc, inv };
+}
+
+function renderDemoPanel() {
+  const { inc, inv } = _demoCount();
+  const anyDemo = inc + inv > 0;
+  return `
+    <details class="card p-0 border-2 border-dashed border-amber-300 bg-amber-50/40">
+      <summary class="cursor-pointer px-4 py-3 flex items-center justify-between gap-3 hover:bg-amber-50">
+        <div class="flex items-center gap-2">
+          <span class="text-lg">🎬</span>
+          <span class="text-sm font-semibold text-amber-900">Modo demo / grabación de video</span>
+          ${anyDemo ? `<span class="text-[10px] chip bg-amber-200 text-amber-900">${inc} ingresos · ${inv} facturas</span>` : ''}
+        </div>
+        <span class="text-xs text-amber-700">▼</span>
+      </summary>
+      <div class="px-4 pb-4 pt-1 space-y-3">
+        <p class="text-xs text-amber-900 leading-relaxed">
+          Carga 8 ingresos de prueba con negocios ficticios y montos variados. El flujo de facturación corre
+          exactamente igual (mismo modal, misma vista previa, misma animación, mismo PDF con QR), pero
+          <b>NO le pega a AFIP</b> — el CAE es simulado. Los datos y facturas demo quedan marcados con 🎬 y
+          podés limpiarlos de un click.
+        </p>
+        <div class="flex flex-wrap gap-2">
+          <button onclick="seedDemoFinanceData()" class="btn-primary text-xs">+ Cargar 8 ingresos de prueba</button>
+          ${anyDemo ? `<button onclick="clearDemoData()" class="btn-ghost text-xs text-red-600">🧹 Limpiar todo lo demo (${inc} ingresos + ${inv} facturas)</button>` : ''}
+        </div>
+      </div>
+    </details>
+  `;
+}
+
+const _DEMO_SEED = [
+  { negocio: 'Café Las Violetas',          concept: 'Rediseño web + e-commerce',    amount: 850,     currency: 'USD', clientDocType: 80, clientDocNumber: '30718204539', clientName: 'Café Las Violetas S.A.' },
+  { negocio: 'Estudio Jurídico Pérez',     concept: 'Mantenimiento mensual · octubre', amount: 180,  currency: 'USD', clientDocType: 80, clientDocNumber: '30715890234', clientName: 'Pérez & Asociados' },
+  { negocio: 'Ferretería El Tornillo',     concept: 'Catálogo online',              amount: 420000,  currency: 'ARS', clientDocType: 80, clientDocNumber: '30711234567', clientName: 'El Tornillo SRL' },
+  { negocio: 'Panadería La Esquina',       concept: 'Landing + reservas',           amount: 180000,  currency: 'ARS', clientDocType: 99, clientDocNumber: 0,              clientName: '' },
+  { negocio: 'Consultora Ágora',           concept: 'Sistema CRM interno',          amount: 2400,    currency: 'USD', clientDocType: 80, clientDocNumber: '30718456789', clientName: 'Ágora Consultores' },
+  { negocio: 'Gimnasio FitClub',           concept: 'App de reservas · setup',      amount: 650,     currency: 'USD', clientDocType: 80, clientDocNumber: '30719876543', clientName: 'FitClub Argentina' },
+  { negocio: 'Peluquería Studio Luna',     concept: 'Diseño de marca + redes',      amount: 320000,  currency: 'ARS', clientDocType: 96, clientDocNumber: '32456789',    clientName: 'Luna Martínez' },
+  { negocio: 'Tienda Pampa Store',         concept: 'Integración Mercado Pago',     amount: 95000,   currency: 'ARS', clientDocType: 80, clientDocNumber: '30712345678', clientName: 'Pampa Store SRL' },
+];
+
+function seedDemoFinanceData() {
+  state.incomes = state.incomes || [];
+  state.incomePayments = state.incomePayments || [];
+  const today = new Date();
+  const now = new Date().toISOString();
+  const rate = Number(state.exchangeRate) || 1200;
+
+  let added = 0;
+  _DEMO_SEED.forEach((d, idx) => {
+    // Fecha: distribuida en los últimos 20 días
+    const date = new Date(today);
+    date.setDate(today.getDate() - (idx * 2 + 1));
+    const dateStr = date.toISOString().slice(0, 10);
+
+    const incomeId = uid();
+    const income = {
+      id: incomeId,
+      concept: d.concept,
+      amount: d.amount,
+      currency: d.currency,
+      date: dateStr,
+      projectId: null,
+      status: 'PENDING',
+      exchangeRateAtTime: rate,
+      createdAt: now,
+      createdBy: currentMemberId,
+      _demo: true,
+      _demoClient: {
+        name: d.clientName || d.negocio,
+        docType: d.clientDocType,
+        docNumber: d.clientDocNumber,
+      },
+    };
+    state.incomes.push(income);
+
+    // Mezcla de estados: 50% cobrados full, 25% parciales, 25% pendientes
+    const mod = idx % 4;
+    if (mod === 0 || mod === 1) {
+      // Full paid
+      state.incomePayments.push({
+        id: uid(),
+        incomeId,
+        amount: d.amount,
+        currency: d.currency,
+        date: dateStr,
+        paidAt: now,
+        paidBy: currentMemberId,
+        exchangeRate: rate,
+        note: '',
+      });
+      income.status = 'CONFIRMED';
+      income.confirmedAt = now;
+    } else if (mod === 2) {
+      // Partial 50%
+      state.incomePayments.push({
+        id: uid(),
+        incomeId,
+        amount: d.amount * 0.5,
+        currency: d.currency,
+        date: dateStr,
+        paidAt: now,
+        paidBy: currentMemberId,
+        exchangeRate: rate,
+        note: '1er pago (demo)',
+      });
+    }
+    // mod === 3 → sin pagos, queda pending
+    added++;
+  });
+
+  save();
+  render();
+  showToast(`${added} ingresos de prueba cargados 🎬`, 'success');
+}
+
+function clearDemoData() {
+  const { inc, inv } = _demoCount();
+  if (inc + inv === 0) { showToast('No hay datos demo para limpiar', 'info'); return; }
+  if (!confirm(`¿Limpiar los ${inc} ingresos + ${inv} facturas marcados como DEMO?\n\nSe borran también los pagos registrados sobre esos ingresos.\nLos datos reales no se tocan.`)) return;
+
+  const demoIncomeIds = new Set((state.incomes || []).filter(i => i._demo).map(i => i.id));
+  state.incomes       = (state.incomes || []).filter(i => !i._demo);
+  state.incomePayments = (state.incomePayments || []).filter(p => !demoIncomeIds.has(p.incomeId));
+  state.invoices      = (state.invoices || []).filter(v => !v._demo);
+
+  save();
+  render();
+  showToast('Datos demo eliminados ✓', 'success');
+}
+
 function renderFinance() {
   const { from, to, label } = getFinanceRange();
   const baseCur = state.defaultCurrency || 'ARS';
@@ -7078,6 +7255,8 @@ function renderFinance() {
     </div>
 
     <div class="px-4 md:px-10 pb-10 space-y-4 md:space-y-6">
+      ${renderDemoPanel()}
+
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         <div class="card p-4 md:p-5 cursor-pointer hover:ring-2 hover:ring-green-200 transition" onclick="openFinanceBreakdown('income')" title="Click para ver el detalle de cada suma">
           <div class="text-xs text-gray-500 flex items-center gap-1">${showPending ? 'Cobrado' : 'Ingresos'} <span class="text-gray-300">ⓘ</span></div>
